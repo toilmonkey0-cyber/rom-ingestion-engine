@@ -363,7 +363,7 @@ fn test_trash_source_files() {
         file1.to_string_lossy().to_string(), // duplicate
     ];
 
-    let count = trash_source_files(files_to_trash, None).unwrap();
+    let count = trash_source_files(files_to_trash, None, None).unwrap();
     assert_eq!(count, 2);
     assert!(!file1.exists());
     assert!(!file2.exists());
@@ -384,6 +384,7 @@ fn test_trash_source_files_rejects_invalid_input_atomically() {
             bad_ext.to_string_lossy().to_string(),
         ],
         None,
+        None,
     )
     .unwrap_err();
     assert!(err.contains("not a disc-image file"), "got: {}", err);
@@ -391,13 +392,14 @@ fn test_trash_source_files_rejects_invalid_input_atomically() {
     assert!(bad_ext.exists());
 
     // Non-existent paths are rejected too.
-    let err2 = trash_source_files(vec!["non_existent_file_9999.bin".to_string()], None).unwrap_err();
+    let err2 = trash_source_files(vec!["non_existent_file_9999.bin".to_string()], None, None).unwrap_err();
     assert!(err2.contains("no longer exists"), "got: {}", err2);
 
     // Containment: a valid image outside the given base dir is refused.
     let err3 = trash_source_files(
         vec![good.to_string_lossy().to_string()],
         Some(dir.path().join("nested").to_string_lossy().to_string()),
+        None,
     )
     .unwrap_err();
     assert!(err3.contains("outside the scanned library"), "got: {}", err3);

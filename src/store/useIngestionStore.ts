@@ -81,7 +81,7 @@ export interface IngestionState {
   renameGame: (gameId: string, title: string) => Promise<void>;
   startScan: () => Promise<void>;
   startExecution: () => Promise<void>;
-  trashSourceFiles: () => Promise<number>;
+  trashSourceFiles: (confirmPermanent?: boolean) => Promise<number>;
   finishLibrary: (downloadArtwork: boolean) => Promise<FinishLibrarySummary | null>;
   checkChdmanStatus: (customPath?: string) => Promise<ChdmanStatus | null>;
   downloadChdman: () => Promise<void>;
@@ -315,7 +315,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     }
   },
 
-  trashSourceFiles: async () => {
+  trashSourceFiles: async (confirmPermanent = false) => {
     const { summary, plan } = get();
     if (!summary || summary.source_files_to_trash.length === 0) {
       return 0;
@@ -325,14 +325,17 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     try {
       const count = await trashSourceFilesApi(
         summary.source_files_to_trash,
-        plan?.input_dir ?? null
+        plan?.input_dir ?? null,
+        confirmPermanent
       );
       set({ trashedCount: count, isTrashing: false });
       return count;
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      set({ error: `Trash operation failed: ${msg}`, isTrashing: false });
-      throw err;
+      set({ isTrashing: false });
+      // The no-Recycle-Bin refusal is not an app failure: rethrow so the UI
+      // can offer the explicit permanent-delete confirmation.
+      throw err instanceof Error ? err : new Error(msg);
     }
   },
 

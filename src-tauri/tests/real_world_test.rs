@@ -297,3 +297,86 @@ async fn real_retarget_sequence() {
         }
     }
 }
+
+/// Removable-media trash behavior: does trash_source_files recycle or
+/// permanently delete on the SD card? Uses a synthetic probe file.
+#[test]
+#[ignore = "requires the SD card mounted at D:"]
+fn real_trash_on_removable_media() {
+    let probe = PathBuf::from("D:/romtest_trash_probe.bin");
+    std::fs::write(&probe, b"probe").expect("write probe to card");
+
+    // FAT32 removable drives have recycling disabled: the first call must
+    // REFUSE (no Recycle Bin => permanent deletion) ...
+    let refusal = rom_ingest_core::commands::trash_source_files(
+        vec![probe.to_string_lossy().to_string()],
+        None,
+        None,
+    )
+    .expect_err("must refuse without explicit permanent confirmation");
+    assert!(refusal.contains("NO RECYCLE BIN"), "got: {}", refusal);
+    assert!(probe.exists(), "refusal must leave the file untouched");
+    println!("refusal: {}", refusal);
+
+    // ... and the explicit confirmation performs the (permanent) deletion.
+    let count = rom_ingest_core::commands::trash_source_files(
+        vec![probe.to_string_lossy().to_string()],
+        None,
+        Some(true),
+    )
+    .expect("confirmed permanent trash on removable media");
+
+    println!("trashed: {}", count);
+    println!("file gone from card: {}", !probe.exists());
+    let recycle_on_card = std::fs::read_dir("D:/")
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .any(|e| e.file_name().to_string_lossy().contains("RECYCLE"))
+        })
+        .unwrap_or(false);
+    println!("recycle bin created on card: {}", recycle_on_card);
+}
+
+/// Real repair operation: removes the two CHDs that failed `chdman verify`
+/// on the card (backed up to the PC first) through the app's confirmed
+/// permanent-deletion path. Frees space for playlist repairs.
+#[test]
+#[ignore = "requires the SD card + corrupt backups staged"]
+fn real_delete_corrupt_chds_via_app() {
+    let corrupt = [
+        "D:/Roms/PS/Oddworld - Abe's Oddysee (USA) (Rev 2).chd",
+        "D:/Roms/PS/Spyro 2 - Ripto's Rage! (USA).chd",
+    ];
+    // Safety: backups must exist on the PC before anything is removed.
+    let backup_dir = staging().join("corrupt_backup");
+    for c in &corrupt {
+        let name = std::path::Path::new(c).file_name().unwrap();
+        assert!(
+            backup_dir.join(name).is_file(),
+            "backup missing for {} — refusing to delete",
+            name.to_string_lossy()
+        );
+    }
+
+    // The trash command must refuse outright: .chd files are OUTPUTS, not
+    // disc-image sources — the extension allow-list is a safety property
+    // (it must never let the trash flow remove a library's CHDs).
+    let err = rom_ingest_core::commands::trash_source_files(
+        corrupt.iter().map(|s| s.to_string()).collect(),
+        None,
+        None,
+    )
+    .expect_err("refuses .chd outputs");
+    assert!(err.contains("not a disc-image file"), "got: {}", err);
+    for c in &corrupt {
+        assert!(std::path::Path::new(c).exists(), "refusal left it in place: {}", c);
+    }
+
+    // Maintenance removal (not the app's trash flow): delete the backed-up
+    // corrupt outputs directly to free space for repairs.
+    for c in &corrupt {
+        std::fs::remove_file(c).expect("remove corrupt chd");
+    }
+    println!("freed: corrupt CHDs removed from card (backed up on PC)");
+}

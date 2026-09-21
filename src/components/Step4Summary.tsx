@@ -39,6 +39,7 @@ export const Step4Summary: React.FC = () => {
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [trashError, setTrashError] = useState<string | null>(null);
+  const [permanentMode, setPermanentMode] = useState(false);
   const [artPreviews, setArtPreviews] = useState<Record<string, string>>({});
 
   // Lazily load thumbnails for downloaded artwork once the Finish Line
@@ -84,13 +85,19 @@ export const Step4Summary: React.FC = () => {
   const handleConfirmTrash = async () => {
     setTrashError(null);
     try {
-      await trashSourceFiles();
+      await trashSourceFiles(permanentMode);
       setShowTrashModal(false);
+      setPermanentMode(false);
     } catch (err: unknown) {
       // Keep the modal open and show the error inside it — the page-level
       // banner is hidden behind the modal overlay.
       const msg = err instanceof Error ? err.message : String(err);
       setTrashError(msg);
+      if (msg.includes('NO RECYCLE BIN')) {
+        // SD card without recycling: require an explicit permanent-delete
+        // confirmation instead of silently destroying files.
+        setPermanentMode(true);
+      }
     }
   };
 
@@ -434,6 +441,20 @@ export const Step4Summary: React.FC = () => {
               </div>
             </div>
 
+            {permanentMode && (
+              <div className="bg-red-950/70 border border-red-700 rounded-xl p-4 space-y-2 text-xs">
+                <p className="font-bold text-red-300 uppercase tracking-wide flex items-center space-x-1.5">
+                  <AlertTriangle className="w-4 h-4" />
+                  <span>Warning: permanent deletion</span>
+                </p>
+                <p className="text-red-200/90">
+                  This drive has no Recycle Bin (typical for SD cards), so these files cannot be
+                  restored once removed. Make sure your CHD outputs are verified — then confirm
+                  below only if you accept permanent loss.
+                </p>
+              </div>
+            )}
+
             {trashError && (
               <div className="bg-red-950/60 border border-red-800/60 rounded-xl p-3 text-red-300 flex items-start space-x-2 text-xs">
                 <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
@@ -456,10 +477,19 @@ export const Step4Summary: React.FC = () => {
                 type="button"
                 onClick={handleConfirmTrash}
                 disabled={isTrashing}
-                className="px-5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold flex items-center space-x-1.5 transition-all"
+                className={`px-5 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all ${
+                  permanentMode
+                    ? 'bg-red-600 hover:bg-red-500 text-white'
+                    : 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                }`}
               >
                 {isTrashing ? (
-                  <span>Moving to Trash...</span>
+                  <span>{permanentMode ? 'Deleting Permanently...' : 'Moving to Trash...'}</span>
+                ) : permanentMode ? (
+                  <>
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Yes, Delete Permanently</span>
+                  </>
                 ) : (
                   <>
                     <Trash2 className="w-4 h-4" />

@@ -580,10 +580,24 @@ pub async fn execute_plan(
 /// cleanup for a complete one.
 ///
 /// Returns the number of files successfully moved to the trash.
+/// True when the volume backing `path` has a Recycle Bin the OS will use.
+/// FAT32/exFAT removable drives (SD cards) commonly have recycling disabled:
+/// `trash::delete` on those volumes PERMANENTLY deletes, despite the app's
+/// recoverability promise. This check keeps that promise honest.
+pub fn volume_has_recycle_bin(path: &Path) -> bool {
+    let Some(root) = path.ancestors().last() else {
+        return true; // relative path: assume the working volume is fine
+    };
+    // A volume root looks like "X:\". $RECYCLE.BIN exists on volumes with
+    // recycling enabled.
+    root.join("$RECYCLE.BIN").is_dir()
+}
+
 #[tauri::command]
 pub fn trash_source_files(
     source_files: Vec<String>,
     base_dir: Option<String>,
+    allow_permanent: Option<bool>,
 ) -> Result<usize, String> {
     const ALLOWED_EXTENSIONS: [&str; 6] = ["cue", "bin", "gdi", "iso", "img", "raw"];
 
@@ -594,6 +608,7 @@ pub fn trash_source_files(
 
     // Validate everything up front so a rejected list leaves nothing trashed.
     let mut unique_paths = HashSet::new();
+    let mut non_recyclable_roots: Vec<String> = Vec::new();
     for s in &source_files {
         let p = PathBuf::from(s);
         if !p.exists() {
@@ -601,6 +616,16 @@ pub fn trash_source_files(
                 "Refusing to trash: source file no longer exists: {}",
                 s
             ));
+        }
+        if !volume_has_recycle_bin(&p) {
+            let root = p
+                .ancestors()
+                .last()
+                .map(|r| r.to_string_lossy().to_string())
+                .unwrap_or_else(|| "this drive".to_string());
+            if !non_recyclable_roots.contains(&root) {
+                non_recyclable_roots.push(root);
+            }
         }
         let ext = p
             .extension()
@@ -625,6 +650,13 @@ pub fn trash_source_files(
             }
         }
         unique_paths.insert(p);
+    }
+
+    if !non_recyclable_roots.is_empty() && allow_permanent != Some(true) {
+        return Err(format!(
+            "NO RECYCLE BIN on {} — this drive is configured for permanent deletion, so              removing files there CANNOT be undone. Confirm explicitly to delete permanently.",
+            non_recyclable_roots.join(", ")
+        ));
     }
 
     let mut count = 0;

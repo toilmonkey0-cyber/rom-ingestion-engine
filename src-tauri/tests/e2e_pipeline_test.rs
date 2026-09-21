@@ -194,7 +194,7 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
     assert!(cue2_path.exists());
     assert!(bin2_path.exists());
 
-    let trashed_count = trash_source_files(summary.source_files_to_trash, None)
+    let trashed_count = trash_source_files(summary.source_files_to_trash, None, None)
         .expect("trash_source_files should succeed");
     assert_eq!(trashed_count, 5);
 
@@ -440,7 +440,7 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
     assert!(progress.iter().any(|p| p.progress == 100.0));
 
     // Trash source files
-    let trashed = trash_source_files(summary.source_files_to_trash, None).expect("trash source files");
+    let trashed = trash_source_files(summary.source_files_to_trash, None, None).expect("trash source files");
     assert_eq!(trashed, 2);
     assert!(!cue_path.exists());
     assert!(!bin_path.exists());

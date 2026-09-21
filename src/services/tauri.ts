@@ -211,13 +211,15 @@ export async function executePlanApi(
 
 export async function trashSourceFilesApi(
   sourceFiles: string[],
-  baseDir?: string | null
+  baseDir?: string | null,
+  allowPermanent?: boolean
 ): Promise<number> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
     return await invoke<number>('trash_source_files', {
       sourceFiles,
       baseDir: baseDir?.trim() ? baseDir.trim() : null,
+      allowPermanent: allowPermanent === true,
     });
   }
 
