@@ -4,6 +4,10 @@ use std::io::Write;
 use std::path::PathBuf;
 use tempfile::tempdir;
 
+use rom_ingest_core::chdman::downloader::{
+    compute_file_sha256, download_and_install_from_url, ArchiveFormat, ChdmanSource,
+    PlatformManifest,
+};
 use rom_ingest_core::chdman::runner::{verify_chd_header, ChdmanRunner};
 use rom_ingest_core::commands::*;
 use rom_ingest_core::models::*;
@@ -274,3 +278,170 @@ async fn test_e2e_pipeline_multiplatform_mixed_presets() {
     // Total source files to trash = 6
     assert_eq!(summary.source_files_to_trash.len(), 6);
 }
+
+#[tokio::test]
+async fn test_e2e_pipeline_with_downloader_and_status_integration() {
+    // 0. Ensure no prior custom path is configured
+    set_stored_custom_chdman_path(None);
+
+    // Initial check should not report a custom path
+    let initial_status = check_chdman_status(None).await.expect("check_chdman_status");
+    assert_ne!(initial_status.source, ChdmanSource::CustomPath);
+
+    // 1. Setup mock server streaming a packaged chdman zip archive
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let dir = tempdir().unwrap();
+    let zip_path = dir.path().join("payload.zip");
+    let binary_name = if cfg!(windows) { "chdman.exe" } else { "chdman" };
+
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file(format!("chdman-0.268/{}", binary_name), options).unwrap();
+        let mock_bytes = std::fs::read(get_mock_chdman_path()).expect("read mock chdman binary");
+        zip.write_all(&mock_bytes).unwrap();
+        zip.finish().unwrap();
+    }
+
+    let payload = std::fs::read(&zip_path).unwrap();
+    let expected_sha256 = compute_file_sha256(&zip_path).unwrap();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server_handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await.unwrap();
+
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+            payload.len()
+        );
+        socket.write_all(header.as_bytes()).await.unwrap();
+
+        let mid = payload.len() / 2;
+        socket.write_all(&payload[..mid]).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        socket.write_all(&payload[mid..]).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let download_sink = MockEventSink::new();
+    let managed_bin_dir = dir.path().join("managed_bin");
+
+    let manifest = PlatformManifest {
+        os: if cfg!(windows) { "windows" } else if cfg!(target_os = "macos") { "macos" } else { "linux" },
+        arch: "x86_64",
+        download_url: "mock",
+        expected_sha256: Box::leak(expected_sha256.into_boxed_str()),
+        archive_format: ArchiveFormat::Zip,
+        format: ArchiveFormat::Zip,
+        binary_name,
+        version: "0.268",
+    };
+
+    let url = format!("http://127.0.0.1:{}/chdman.zip", port);
+    let downloaded_status = download_and_install_from_url(
+        &url,
+        &manifest,
+        &managed_bin_dir,
+        &download_sink,
+    )
+    .await
+    .expect("download_and_install_from_url");
+
+    server_handle.await.unwrap();
+
+    // Verify downloaded status & events
+    assert!(downloaded_status.ready);
+    assert_eq!(downloaded_status.source, ChdmanSource::ManagedDirectory);
+    assert!(downloaded_status.path.is_some());
+    let installed_binary_path = downloaded_status.path.unwrap();
+    assert!(PathBuf::from(&installed_binary_path).exists());
+    assert!(!managed_bin_dir.join("chdman_download.tmp").exists());
+
+    let dl_events = download_sink.download_events.lock().unwrap().clone();
+    assert!(!dl_events.is_empty());
+    assert_eq!(dl_events.last().unwrap().percentage, 100.0);
+
+    // 2. Set as custom path and verify status query
+    let custom_set_status = set_custom_chdman_path(installed_binary_path.clone())
+        .await
+        .expect("set_custom_chdman_path");
+    assert!(custom_set_status.ready);
+    assert_eq!(custom_set_status.source, ChdmanSource::CustomPath);
+
+    let active_status = check_chdman_status(None).await.expect("check_chdman_status");
+    assert!(active_status.ready);
+    assert_eq!(active_status.source, ChdmanSource::CustomPath);
+    assert_eq!(active_status.path.as_deref(), Some(installed_binary_path.as_str()));
+
+    // 3. Run full scan and plan with Batocera preset
+    let roms_in = dir.path().join("psx_in");
+    let roms_out = dir.path().join("steamdeck_sd");
+    std::fs::create_dir_all(&roms_in).unwrap();
+    std::fs::create_dir_all(&roms_out).unwrap();
+
+    let psx_in = roms_in.join("psx");
+    std::fs::create_dir_all(&psx_in).unwrap();
+    let cue_path = psx_in.join("Crash Bandicoot (USA).cue");
+    let bin_path = psx_in.join("Crash Bandicoot (USA).bin");
+    File::create(&bin_path).unwrap().write_all(b"crash bandicoot test disc track").unwrap();
+    File::create(&cue_path)
+        .unwrap()
+        .write_all(b"FILE \"Crash Bandicoot (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    let plan = scan_and_plan(
+        roms_in.to_string_lossy().to_string(),
+        roms_out.to_string_lossy().to_string(),
+        FrontendPreset::Batocera,
+        None,
+    )
+    .await
+    .expect("scan_and_plan");
+
+    assert_eq!(plan.games.len(), 1);
+    assert_eq!(plan.games[0].canonical_title, "Crash Bandicoot");
+    assert_eq!(plan.games[0].platform, Platform::Psx);
+    assert_eq!(plan.games[0].discs.len(), 1);
+    let target_chd = plan.games[0].discs[0].target_chd_path.clone();
+
+    // 4. Execute plan with chdman_override = None to prove it uses detected custom chdman!
+    let emitter = MockEventSink::new();
+    let summary = execute_plan_internal(&emitter, plan, None, Some(2))
+        .await
+        .expect("execute_plan_internal using custom detected chdman");
+
+    assert_eq!(summary.total_games, 1);
+    assert_eq!(summary.successful_games, 1);
+    assert_eq!(summary.failed_games, 0);
+    assert_eq!(summary.processed_discs, 1);
+
+    assert!(target_chd.exists(), "Target CHD must exist");
+    assert!(
+        verify_chd_header(&target_chd).expect("verify chd header"),
+        "Target CHD header must have valid MComprHD magic"
+    );
+
+    // Verify progress events
+    let progress = emitter.progress_events.lock().unwrap().clone();
+    assert!(progress.iter().any(|p| p.progress == 100.0));
+
+    // Trash source files
+    let trashed = trash_source_files(summary.source_files_to_trash).expect("trash source files");
+    assert_eq!(trashed, 2);
+    assert!(!cue_path.exists());
+    assert!(!bin_path.exists());
+
+    // 5. Cleanup stored custom path
+    set_stored_custom_chdman_path(None);
+    let final_status = check_chdman_status(None).await.expect("check status after reset");
+    assert_ne!(final_status.source, ChdmanSource::CustomPath);
+}
+
