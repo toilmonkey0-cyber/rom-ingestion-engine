@@ -34,7 +34,7 @@ describe('Step3ExecutionProgress', () => {
           },
         ],
       },
-      gameProgress: { 'game-1': 50 },
+      gameProgress: { 'game-1:1': 60, 'game-1:2': 40 },
       activeLogs: ['[10:00:00] Compressing Gran Turismo 2 (Disc 1)...'],
     });
   });
@@ -44,7 +44,40 @@ describe('Step3ExecutionProgress', () => {
 
     expect(screen.getByText(/Converting & Verifying Discs/i)).toBeDefined();
     expect(screen.getByText('Gran Turismo 2')).toBeDefined();
+    // Per-disc values are averaged per game: (60 + 40) / 2 = 50%
     expect(screen.getAllByText(/50%/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Compressing Gran Turismo 2/i)).toBeDefined();
+  });
+
+  it('renders a failure header (not a green check) when execution errored', () => {
+    useIngestionStore.setState({ isExecuting: false, error: 'chdman not found', summary: null });
+    render(<Step3ExecutionProgress />);
+
+    expect(screen.getByText(/Execution Failed/i)).toBeDefined();
+    expect(screen.queryByText(/Execution Finished/i)).toBeNull();
+    // No summary: the View Summary button must not be offered
+    expect(screen.queryByRole('button', { name: /View Summary/i })).toBeNull();
+    expect(screen.getByRole('button', { name: /Back to Plan/i })).toBeDefined();
+  });
+
+  it('offers View Summary only after a summary exists', () => {
+    useIngestionStore.setState({ isExecuting: false, error: null, summary: null });
+    const { rerender } = render(<Step3ExecutionProgress />);
+    expect(screen.queryByRole('button', { name: /View Summary/i })).toBeNull();
+
+    useIngestionStore.setState({
+      summary: {
+        total_games: 1,
+        successful_games: 1,
+        failed_games: 0,
+        total_discs: 2,
+        processed_discs: 2,
+        source_files_to_trash: [],
+        total_source_bytes: 1000,
+        total_output_bytes: 500,
+      },
+    });
+    rerender(<Step3ExecutionProgress />);
+    expect(screen.getByRole('button', { name: /View Summary/i })).toBeDefined();
   });
 });

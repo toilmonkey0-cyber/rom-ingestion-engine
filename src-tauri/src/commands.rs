@@ -12,9 +12,11 @@ use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
     ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset, GameClassification,
-    GameStatusEvent, IngestionPlan, JobProgressEvent, TaskStatus,
+    GameStatusEvent, IngestionPlan, JobProgressEvent, SkippedSource, TaskStatus,
 };
+use crate::organizer::presets::CustomPresetConfig;
 use crate::plan_builder::build_ingestion_plan;
+use crate::scanner::is_under_root;
 
 /// Abstraction for emitting progress and status events to the frontend or test listener.
 pub trait EventSink: Send + Sync {
@@ -125,6 +127,7 @@ pub async fn scan_and_plan(
     output_dir: String,
     preset: FrontendPreset,
     api_key: Option<String>,
+    custom_config: Option<CustomPresetConfig>,
 ) -> Result<IngestionPlan, String> {
     let in_path = PathBuf::from(&input_dir);
     let out_path = PathBuf::from(&output_dir);
@@ -135,9 +138,34 @@ pub async fn scan_and_plan(
     if !in_path.is_dir() {
         return Err(format!("Input path is not a directory: {}", input_dir));
     }
+    if out_path.exists() && !out_path.is_dir() {
+        return Err(format!(
+            "Output path exists and is not a directory: {}",
+            output_dir
+        ));
+    }
+    let canon_in = std::fs::canonicalize(&in_path).unwrap_or_else(|_| in_path.clone());
+    let canon_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
+    if canon_in == canon_out {
+        return Err(
+            "Output directory must be different from the input directory (sources are trashed "
+                .to_string()
+                + "after successful ingestion, which would destroy the results)",
+        );
+    }
+    std::fs::create_dir_all(&out_path)
+        .map_err(|e| format!("Cannot create output directory '{}': {}", output_dir, e))?;
 
-    let fingerprints =
-        crate::scanner::scan_directory(&in_path).map_err(|e| format!("Scan error: {}", e))?;
+    let scan = crate::scanner::scan_directory(&in_path).map_err(|e| format!("Scan error: {}", e))?;
+    let skipped_sources: Vec<SkippedSource> = scan
+        .skipped
+        .into_iter()
+        .map(|s| SkippedSource {
+            path: s.descriptor,
+            reason: s.reason,
+        })
+        .collect();
+    let fingerprints = scan.fingerprints;
 
     let redump_db = RedumpDatabase::with_builtin_data();
     let jev_client = api_key
@@ -182,7 +210,14 @@ pub async fn scan_and_plan(
         classified_items.push((disc, classification));
     }
 
-    let plan = build_ingestion_plan(in_path, out_path, preset, classified_items);
+    let plan = build_ingestion_plan(
+        in_path,
+        out_path,
+        preset,
+        custom_config.as_ref(),
+        classified_items,
+        skipped_sources,
+    );
     Ok(plan)
 }
 
@@ -194,6 +229,7 @@ struct DiscConversionResult {
     output_bytes: u64,
     source_files: Vec<String>,
     target_chd_path: PathBuf,
+    relative_m3u_entry: Option<String>,
 }
 
 /// Internal execution engine supporting both Tauri AppHandle and MockEventSink.
@@ -248,6 +284,7 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
         });
 
         let mut disc_join_set = tokio::task::JoinSet::new();
+        let input_root = plan.input_dir.clone();
 
         for disc in game.discs {
             let sem = semaphore.clone();
@@ -257,6 +294,8 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
             let disc_number = disc.disc_number;
             let src = disc.source_descriptor.clone();
             let target = disc.target_chd_path.clone();
+            let relative_m3u_entry = disc.relative_m3u_entry.clone();
+            let disc_input_root = input_root.clone();
 
             disc_join_set.spawn(async move {
                 let _permit = match sem.acquire().await {
@@ -269,6 +308,7 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                             output_bytes: 0,
                             source_files: Vec::new(),
                             target_chd_path: target,
+                            relative_m3u_entry: None,
                         };
                     }
                 };
@@ -299,7 +339,9 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         let out_bytes = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
                         let mut sources = vec![src.to_string_lossy().to_string()];
 
-                        // Discover referenced tracks if cue/gdi
+                        // Discover referenced tracks if cue/gdi. Only tracks that
+                        // resolve (case-insensitively) inside the scanned input
+                        // root are eligible for trash; anything else is left alone.
                         let ext = src
                             .extension()
                             .and_then(|e| e.to_str())
@@ -314,9 +356,18 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                                     };
                                     let parent = src.parent().unwrap_or(Path::new(""));
                                     for r in refs {
-                                        let track_path = parent.join(r);
-                                        if track_path.exists() {
-                                            sources.push(track_path.to_string_lossy().to_string());
+                                        if let Some(resolved) =
+                                            crate::scanner::cue_parser::resolve_path_case_insensitive(
+                                                parent, &r,
+                                            )
+                                        {
+                                            if resolved.is_file()
+                                                && is_under_root(&disc_input_root, &resolved)
+                                            {
+                                                sources.push(
+                                                    resolved.to_string_lossy().to_string(),
+                                                );
+                                            }
                                         }
                                     }
                                 }
@@ -330,6 +381,7 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                             output_bytes: out_bytes,
                             source_files: sources,
                             target_chd_path: target,
+                            relative_m3u_entry,
                         }
                     }
                     Err(err) => DiscConversionResult {
@@ -339,6 +391,7 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         output_bytes: 0,
                         source_files: Vec::new(),
                         target_chd_path: target,
+                        relative_m3u_entry: None,
                     },
                 }
             });
@@ -356,6 +409,7 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         output_bytes: 0,
                         source_files: Vec::new(),
                         target_chd_path: PathBuf::new(),
+                        relative_m3u_entry: None,
                     });
                 }
             }
@@ -386,7 +440,11 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         crate::organizer::presets::get_multidisc_subfolder(plan.preset);
                     let mut relative_entries = Vec::new();
                     for d in &game_disc_results {
-                        if let Some(name) = d.target_chd_path.file_name().and_then(|f| f.to_str()) {
+                        if let Some(entry) = &d.relative_m3u_entry {
+                            relative_entries.push(entry.clone());
+                        } else if let Some(name) =
+                            d.target_chd_path.file_name().and_then(|f| f.to_str())
+                        {
                             relative_entries.push(format!("{}/{}", multidisc_subfolder, name));
                         }
                     }
@@ -447,18 +505,70 @@ pub async fn execute_plan(
 
 /// Safely moves verified source dumps and track files to the OS Recycle Bin / Trash.
 ///
+/// Paths are validated before deletion: each must exist, have a disc-image
+/// extension (.cue/.bin/.gdi/.iso/.img/.raw), and — when `base_dir` is
+/// supplied — be located underneath it. Invalid paths are rejected outright
+/// rather than silently skipped, so the caller cannot mistake a partial
+/// cleanup for a complete one.
+///
 /// Returns the number of files successfully moved to the trash.
 #[tauri::command]
-pub fn trash_source_files(source_files: Vec<String>) -> Result<usize, String> {
-    let mut count = 0;
-    let mut unique_paths = HashSet::new();
+pub fn trash_source_files(
+    source_files: Vec<String>,
+    base_dir: Option<String>,
+) -> Result<usize, String> {
+    const ALLOWED_EXTENSIONS: [&str; 6] = ["cue", "bin", "gdi", "iso", "img", "raw"];
 
-    for s in source_files {
-        let p = PathBuf::from(&s);
-        if p.exists() && unique_paths.insert(p.clone()) {
-            trash::delete(&p).map_err(|e| format!("Failed to move '{}' to trash: {}", s, e))?;
-            count += 1;
+    let base = base_dir
+        .as_deref()
+        .map(PathBuf::from)
+        .map(|b| std::fs::canonicalize(&b).unwrap_or(b));
+
+    // Validate everything up front so a rejected list leaves nothing trashed.
+    let mut unique_paths = HashSet::new();
+    for s in &source_files {
+        let p = PathBuf::from(s);
+        if !p.exists() {
+            return Err(format!(
+                "Refusing to trash: source file no longer exists: {}",
+                s
+            ));
         }
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        match ext.as_deref() {
+            Some(e) if ALLOWED_EXTENSIONS.contains(&e) => {}
+            _ => {
+                return Err(format!(
+                    "Refusing to trash '{}': not a disc-image file (.cue/.bin/.gdi/.iso/.img/.raw)",
+                    s
+                ))
+            }
+        }
+        if let Some(ref base) = base {
+            if !is_under_root(base, &p) {
+                return Err(format!(
+                    "Refusing to trash '{}': it is outside the scanned library '{}'",
+                    s,
+                    base.display()
+                ));
+            }
+        }
+        unique_paths.insert(p);
+    }
+
+    let mut count = 0;
+    for p in &unique_paths {
+        trash::delete(p).map_err(|e| {
+            format!(
+                "Failed to move '{}' to trash: {}",
+                p.to_string_lossy(),
+                e
+            )
+        })?;
+        count += 1;
     }
 
     Ok(count)

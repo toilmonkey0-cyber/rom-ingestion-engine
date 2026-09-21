@@ -1,6 +1,11 @@
 use regex::Regex;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 use crate::scanner::ScannerError;
+
+static CUE_FILE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)^\s*FILE\s+(?:"([^"]+)"|'([^']+)'|(\S+))"#).expect("valid cue FILE regex")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CueSheet {
@@ -20,14 +25,13 @@ impl CueSheet {
 /// Skips comment lines beginning with `REM`.
 pub fn parse_cue_references(content: &str) -> Vec<String> {
     let mut refs = Vec::new();
-    let re = Regex::new(r#"(?i)^\s*FILE\s+(?:"([^"]+)"|'([^']+)'|(\S+))"#).unwrap();
 
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.to_ascii_uppercase().starts_with("REM ") || trimmed.eq_ignore_ascii_case("REM") {
             continue;
         }
-        if let Some(cap) = re.captures(trimmed) {
+        if let Some(cap) = CUE_FILE_RE.captures(trimmed) {
             if let Some(m) = cap.get(1).or_else(|| cap.get(2)).or_else(|| cap.get(3)) {
                 refs.push(m.as_str().to_string());
             }

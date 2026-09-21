@@ -2,46 +2,73 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Cpu,
   Terminal,
-  PauseCircle,
-  PlayCircle,
   AlertOctagon,
   CheckCircle,
   Copy,
   Check,
   Disc3,
   Loader2,
+  ArrowLeft,
 } from 'lucide-react';
 import { useIngestionStore } from '../store/useIngestionStore';
 
 export const Step3ExecutionProgress: React.FC = () => {
-  const { plan, isExecuting, gameProgress, activeLogs, error, setStep } =
-    useIngestionStore();
+  const plan = useIngestionStore((s) => s.plan);
+  const isExecuting = useIngestionStore((s) => s.isExecuting);
+  const gameProgress = useIngestionStore((s) => s.gameProgress);
+  const activeLogs = useIngestionStore((s) => s.activeLogs);
+  const error = useIngestionStore((s) => s.error);
+  const summary = useIngestionStore((s) => s.summary);
+  const setStep = useIngestionStore((s) => s.setStep);
 
   const [copied, setCopied] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const terminalEndRef = useRef<HTMLDivElement>(null);
+  const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     terminalEndRef.current?.scrollIntoView?.({ behavior: 'smooth' });
   }, [activeLogs]);
 
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    };
+  }, []);
+
   const enabledGames = plan?.games.filter((g) => g.enabled) ?? [];
   const totalDiscs = enabledGames.reduce((acc, g) => acc + g.discs.length, 0);
 
-  // Compute completed games and aggregate progress
-  const totalPercentage = enabledGames.length > 0
-    ? Math.round(
-        enabledGames.reduce((acc, g) => {
-          const prog = gameProgress[g.id] ?? 0;
-          return acc + prog;
-        }, 0) / enabledGames.length
-      )
-    : 0;
+  // Per-game progress = average of the game's disc progresses. Discs run
+  // concurrently, so progress keys are `${game_id}:${disc_number}`.
+  const gamePercentage = (gameId: string, discs: { disc_number: number }[]): number => {
+    if (discs.length === 0) return 0;
+    const summed = discs.reduce(
+      (acc, disc) => acc + (gameProgress[`${gameId}:${disc.disc_number}`] ?? 0),
+      0
+    );
+    return summed / discs.length;
+  };
+
+  // Overall progress is disc-weighted: a 4-disc game contributes 4x a 1-disc game.
+  const totalPercentage =
+    totalDiscs > 0
+      ? Math.round(
+          (enabledGames.reduce(
+            (acc, g) => acc + gamePercentage(g.id, g.discs) * g.discs.length,
+            0
+          ) /
+            totalDiscs) *
+            100
+        ) / 100
+      : 0;
+
+  const failed = !isExecuting && !!error;
 
   const handleCopyLogs = () => {
     navigator.clipboard.writeText(activeLogs.join('\n'));
     setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+    if (copyTimerRef.current) clearTimeout(copyTimerRef.current);
+    copyTimerRef.current = setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -50,8 +77,18 @@ export const Step3ExecutionProgress: React.FC = () => {
       <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-xl relative overflow-hidden">
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center space-x-4">
-            <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 shrink-0 shadow-lg shadow-cyan-500/10">
-              {isExecuting ? (
+            <div
+              className={`w-12 h-12 rounded-xl border flex items-center justify-center shrink-0 shadow-lg ${
+                failed
+                  ? 'bg-red-500/10 border-red-500/30 text-red-400 shadow-red-500/10'
+                  : isExecuting
+                  ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400 shadow-cyan-500/10'
+                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-emerald-500/10'
+              }`}
+            >
+              {failed ? (
+                <AlertOctagon className="w-6 h-6 text-red-400" />
+              ) : isExecuting ? (
                 <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
               ) : (
                 <CheckCircle className="w-6 h-6 text-emerald-400" />
@@ -60,38 +97,39 @@ export const Step3ExecutionProgress: React.FC = () => {
             <div>
               <div className="flex items-center space-x-2">
                 <h2 className="text-xl font-bold text-white tracking-tight">
-                  {isExecuting ? 'Converting & Verifying Discs...' : 'Execution Finished'}
+                  {failed
+                    ? 'Execution Failed'
+                    : isExecuting
+                    ? 'Converting & Verifying Discs...'
+                    : 'Execution Finished'}
                 </h2>
-                <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
-                  Worker Pool Active
-                </span>
+                {isExecuting && (
+                  <span className="text-[10px] uppercase font-mono px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 border border-slate-700">
+                    Worker Pool Active
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Multi-threaded chdman compression with automated SHA-1 verification.
+                {failed
+                  ? 'The pipeline aborted before completing. No source files were modified — review the error below.'
+                  : 'Multi-threaded chdman compression with automated SHA-1 verification.'}
               </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-3">
-            <button
-              type="button"
-              onClick={() => setIsPaused(!isPaused)}
-              className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-2 transition-all"
-            >
-              {isPaused ? (
-                <>
-                  <PlayCircle className="w-4 h-4 text-emerald-400" />
-                  <span>Resume</span>
-                </>
-              ) : (
-                <>
-                  <PauseCircle className="w-4 h-4 text-amber-400" />
-                  <span>Pause</span>
-                </>
-              )}
-            </button>
+            {failed && (
+              <button
+                type="button"
+                onClick={() => setStep(2)}
+                className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-2 transition-all"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to Plan</span>
+              </button>
+            )}
 
-            {!isExecuting && (
+            {!isExecuting && summary && (
               <button
                 type="button"
                 onClick={() => setStep(4)}
@@ -111,16 +149,20 @@ export const Step3ExecutionProgress: React.FC = () => {
               <span>Overall Ingestion Progress</span>
             </span>
             <span className="text-cyan-400 font-mono font-bold text-sm">
-              {totalPercentage}%
+              {Math.round(totalPercentage)}%
             </span>
           </div>
 
           <div className="w-full bg-slate-950 rounded-full h-3.5 overflow-hidden border border-slate-800 p-0.5">
             <div
-              className="bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500 h-full rounded-full transition-all duration-300 relative overflow-hidden"
+              className={`h-full rounded-full transition-all duration-300 relative overflow-hidden ${
+                failed
+                  ? 'bg-gradient-to-r from-red-600 to-red-500'
+                  : 'bg-gradient-to-r from-cyan-500 via-blue-500 to-indigo-500'
+              }`}
               style={{ width: `${Math.max(totalPercentage, 2)}%` }}
             >
-              <div className="absolute inset-0 bg-white/20 w-full animate-pulse" />
+              {!failed && <div className="absolute inset-0 bg-white/20 w-full animate-pulse" />}
             </div>
           </div>
 
@@ -154,7 +196,7 @@ export const Step3ExecutionProgress: React.FC = () => {
 
           <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
             {enabledGames.map((game) => {
-              const currentProg = gameProgress[game.id] ?? 0;
+              const currentProg = gamePercentage(game.id, game.discs);
               const isDone = currentProg >= 100;
               const isActive = currentProg > 0 && currentProg < 100;
 

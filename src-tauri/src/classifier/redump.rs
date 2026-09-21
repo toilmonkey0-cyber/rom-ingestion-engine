@@ -33,6 +33,11 @@ impl RedumpEntry {
     }
 }
 
+/// Returns `true` when `s` is a plausible SHA-1 digest: exactly 40 hex characters.
+pub fn is_valid_sha1_hex(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// In-memory Redump SHA-1 hash lookup database and cache.
 #[derive(Debug, Clone, Default)]
 pub struct RedumpDatabase {
@@ -60,6 +65,10 @@ impl RedumpDatabase {
     }
 
     /// Inserts or updates an entry for the given SHA-1 hash (normalized to lowercase).
+    ///
+    /// Returns `false` and does nothing when `sha1` is not a valid 40-character
+    /// hex string — garbage keys can never match a real hash and only mask
+    /// problems in the source data.
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
@@ -70,8 +79,11 @@ impl RedumpDatabase {
         is_multidisc: bool,
         disc_number: Option<u8>,
         total_discs: Option<u8>,
-    ) {
+    ) -> bool {
         let normalized = sha1.trim().to_ascii_lowercase();
+        if !is_valid_sha1_hex(&normalized) {
+            return false;
+        }
         self.entries.insert(
             normalized,
             RedumpEntry {
@@ -83,12 +95,18 @@ impl RedumpDatabase {
                 total_discs,
             },
         );
+        true
     }
 
-    /// Inserts a `RedumpEntry` for the given SHA-1 hash.
-    pub fn insert_entry(&mut self, sha1: &str, entry: RedumpEntry) {
+    /// Inserts a `RedumpEntry` for the given SHA-1 hash. Returns `false` for
+    /// invalid (non-hex) hashes.
+    pub fn insert_entry(&mut self, sha1: &str, entry: RedumpEntry) -> bool {
         let normalized = sha1.trim().to_ascii_lowercase();
+        if !is_valid_sha1_hex(&normalized) {
+            return false;
+        }
         self.entries.insert(normalized, entry);
+        true
     }
 
     /// Returns the number of entries stored in the database.
@@ -126,8 +144,17 @@ impl RedumpDatabase {
         let mut header_cols: Option<Vec<String>> = None;
         let mut delimiter: Option<char> = None;
 
+        let mut first_line = true;
         for line_res in buf.lines() {
-            let line = line_res?;
+            let mut line = line_res?;
+            // Strip a UTF-8 BOM from the first line so header detection works
+            // on files produced by Windows tooling.
+            if first_line {
+                first_line = false;
+                if line.starts_with('\u{feff}') {
+                    line.remove(0);
+                }
+            }
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
                 continue;
@@ -666,12 +693,71 @@ static DISC_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)\(?(?:disc|disque|disco|cd)\s*(\d+)(?:\s*(?:of|/)\s*(\d+))?\)?"#).unwrap()
 });
 
+/// Redump region vocabulary (lowercase), including common abbreviations that
+/// appear in filenames and model answers. Shared by region extraction and tag
+/// stripping so a recognized region is always stripped from the canonical title.
+const REGIONS: &[&str] = &[
+    "usa", "us", "na", "north america", "europe", "eu", "pal", "japan", "jpn", "world", "asia",
+    "australia", "brazil", "canada", "china", "france", "germany", "hong kong", "italy", "korea",
+    "netherlands", "russia", "spain", "sweden", "taiwan", "uk", "mexico", "argentina",
+];
+
+/// Maps a lowercase region token (or alias) to its canonical display form.
+fn canonical_region(lower: &str) -> Option<String> {
+    match lower {
+        "usa" | "us" | "na" | "north america" => Some("USA".to_string()),
+        "europe" | "eu" | "pal" => Some("Europe".to_string()),
+        "japan" | "jpn" => Some("Japan".to_string()),
+        "uk" => Some("UK".to_string()),
+        _ => {
+            if REGIONS.contains(&lower) {
+                // Title-case each word: "hong kong" -> "Hong Kong"
+                Some(
+                    lower
+                        .split_whitespace()
+                        .map(|w| {
+                            let mut cs = w.chars();
+                            match cs.next() {
+                                Some(f) => {
+                                    f.to_uppercase().collect::<String>()
+                                        + &cs.as_str().to_lowercase()
+                                }
+                                None => String::new(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Language codes that appear as parenthesized tags, e.g. `(En)`, `(Ja,En)`.
+const LANG_CODES: &[&str] = &["en", "ja", "fr", "de", "es", "it", "pt", "ko", "zh"];
+
+fn build_region_pattern() -> String {
+    REGIONS.join("|")
+}
+
+fn build_lang_list_pattern() -> String {
+    let codes = LANG_CODES.join("|");
+    format!(r"(?:{})(?:\s*,\s*(?:{}))*", codes, codes)
+}
+
 static REGION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\((USA|Europe|Japan|World|Asia|Australia|Germany|France|Spain|Italy)(?:,[^)]*)?\)"#).unwrap()
+    Regex::new(&format!(r#"(?i)\(({})(?:,[^)]*)?\)"#, build_region_pattern())).unwrap()
 });
 
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\s*\((?:usa|europe|japan|world|asia|australia|germany|france|spain|italy|en|ja|fr|de|es|it|disc\s*\d+[^)]*|cd\s*\d+[^)]*|disque\s*\d+[^)]*|disco\s*\d+[^)]*|track\s*\d+[^)]*|v\d+[^)]*|rev\s*[^)]*|demo|beta|proto|sample|unl|alt\s*\d*|edc)[^)]*\)"#).unwrap()
+    Regex::new(&format!(
+        r#"(?i)\s*\((?:{}(?:,[^)]*)?|{}|(?:disc|disque|disco|cd|track)\s*\d+[^)]*|v\d+[^)]*|rev\s*[^)]*|demo|beta|proto|sample|unl|alt\s*\d*|edc)\)"#,
+        build_region_pattern(),
+        build_lang_list_pattern(),
+    ))
+    .unwrap()
 });
 
 static BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -691,23 +777,10 @@ pub fn extract_disc_info(title: &str) -> (Option<u8>, Option<u8>) {
 
 /// Extracts release region from parenthesized tags in a title.
 pub fn extract_region(title: &str) -> Option<String> {
-    REGION_RE.captures(title).and_then(|c| c.get(1)).map(|m| {
-        let matched = m.as_str();
-        // Capitalize standard region names
-        match matched.to_ascii_lowercase().as_str() {
-            "usa" => "USA".to_string(),
-            "europe" => "Europe".to_string(),
-            "japan" => "Japan".to_string(),
-            "world" => "World".to_string(),
-            "asia" => "Asia".to_string(),
-            "australia" => "Australia".to_string(),
-            "germany" => "Germany".to_string(),
-            "france" => "France".to_string(),
-            "spain" => "Spain".to_string(),
-            "italy" => "Italy".to_string(),
-            _ => matched.to_string(),
-        }
-    })
+    REGION_RE
+        .captures(title)
+        .and_then(|c| c.get(1))
+        .and_then(|m| canonical_region(&m.as_str().trim().to_ascii_lowercase()))
 }
 
 /// Strips release tags (region, disc, revision, dump tags) from a raw title to return canonical game title.

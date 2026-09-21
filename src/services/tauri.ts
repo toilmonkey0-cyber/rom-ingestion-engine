@@ -6,7 +6,18 @@ import {
   GameStatusEvent,
   ChdmanStatus,
   DownloadProgressEvent,
+  CustomPresetConfig,
 } from '../types/plan';
+
+export const DEFAULT_CUSTOM_PRESET: CustomPresetConfig = {
+  psx: 'roms/psx',
+  saturn: 'roms/saturn',
+  dreamcast: 'roms/dreamcast',
+  sega_cd: 'roms/segacd',
+  pce_cd: 'roms/pcenginecd',
+  unknown: 'roms/unknown',
+  multidisc_subfolder: '.discs',
+};
 
 export const isTauri = (): boolean => {
   return (
@@ -19,7 +30,8 @@ export async function scanAndPlanApi(
   inputDir: string,
   outputDir: string,
   preset: FrontendPreset,
-  apiKey?: string
+  apiKey?: string,
+  customConfig?: CustomPresetConfig | null
 ): Promise<IngestionPlan> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -28,6 +40,7 @@ export async function scanAndPlanApi(
       outputDir,
       preset,
       apiKey: apiKey?.trim() ? apiKey.trim() : null,
+      customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
     });
   }
 
@@ -39,6 +52,12 @@ export async function scanAndPlanApi(
     preset,
     total_source_bytes: 5368709120, // 5.0 GB
     estimated_output_bytes: 2952790016, // 2.75 GB (~45% savings)
+    skipped_sources: [
+      {
+        path: 'D:/Roms/Incoming/Broken Game (USA).cue',
+        reason: 'Referenced track not found: Broken Game (USA).bin',
+      },
+    ],
     games: [
       {
         id: 'game-mock-1',
@@ -146,6 +165,7 @@ export async function executePlanApi(
 
     for (const disc of game.discs) {
       trashFiles.push(disc.source_descriptor);
+      trashFiles.push(disc.source_descriptor.replace(/\.(cue|gdi)$/i, '.bin'));
       for (let p = 20; p <= 100; p += 40) {
         await new Promise((r) => setTimeout(r, 120));
         if (onProgress) {
@@ -177,10 +197,16 @@ export async function executePlanApi(
   };
 }
 
-export async function trashSourceFilesApi(sourceFiles: string[]): Promise<number> {
+export async function trashSourceFilesApi(
+  sourceFiles: string[],
+  baseDir?: string | null
+): Promise<number> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<number>('trash_source_files', { sourceFiles });
+    return await invoke<number>('trash_source_files', {
+      sourceFiles,
+      baseDir: baseDir?.trim() ? baseDir.trim() : null,
+    });
   }
 
   await new Promise((r) => setTimeout(r, 400));

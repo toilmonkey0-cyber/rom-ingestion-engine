@@ -22,15 +22,17 @@ pub enum ScannerError {
     ParseError(String),
 }
 
-/// Calculates the SHA-1 checksum on up to the first 16MB of track 1.
+/// Calculates the SHA-1 checksum of the full track-1 binary.
+///
+/// Redump keys hashes by the complete first track, so a prefix hash could never
+/// match the database; hash the entire file.
 pub fn calculate_track1_sha1<P: AsRef<Path>>(track1_path: P) -> std::io::Result<String> {
-    let file = File::open(track1_path)?;
-    let mut handle = file.take(16 * 1024 * 1024);
+    let mut file = File::open(track1_path)?;
     let mut hasher = Sha1::new();
     let mut buffer = [0u8; 64 * 1024];
 
     loop {
-        let n = handle.read(&mut buffer)?;
+        let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
         }
@@ -120,9 +122,35 @@ fn collect_files<P: AsRef<Path>>(dir: P, files: &mut Vec<PathBuf>) -> Result<(),
     Ok(())
 }
 
+/// A disc that was discovered but excluded from the plan, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedDisc {
+    pub descriptor: PathBuf,
+    pub reason: String,
+}
+
+/// Result of a directory scan: usable disc fingerprints plus discs that were
+/// skipped (missing tracks, unreadable sheets, references escaping the root).
+#[derive(Debug, Clone, Default)]
+pub struct ScanResult {
+    pub fingerprints: Vec<DiscFingerprint>,
+    pub skipped: Vec<SkippedDisc>,
+}
+
+/// True if `path` is `base` itself or located underneath it (both canonicalized).
+pub fn is_under_root(base: &Path, path: &Path) -> bool {
+    let canon_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canon_path.starts_with(&canon_base)
+}
+
 /// Recursively scans a root directory for disc images (.cue, .gdi, standalone .iso/.img),
 /// pairs multi-track referenced binary files, computes track 1 SHA-1, and infers platform hints.
-pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, ScannerError> {
+///
+/// Discs whose sheet cannot be resolved (missing track, reference escaping the scan
+/// root, unreadable file) are skipped and reported in `ScanResult::skipped` instead of
+/// aborting the whole scan.
+pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<ScanResult, ScannerError> {
     let root = root.as_ref();
     if !root.exists() {
         return Err(ScannerError::Io(std::io::Error::new(
@@ -154,10 +182,20 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
 
     let mut paired_tracks: HashSet<PathBuf> = HashSet::new();
     let mut fingerprints = Vec::new();
+    let mut skipped: Vec<SkippedDisc> = Vec::new();
 
     for desc_path in descriptors {
         let parent = desc_path.parent().unwrap_or(Path::new(""));
-        let bytes = std::fs::read(&desc_path)?;
+        let bytes = match std::fs::read(&desc_path) {
+            Ok(b) => b,
+            Err(e) => {
+                skipped.push(SkippedDisc {
+                    descriptor: desc_path,
+                    reason: format!("Unreadable sheet: {}", e),
+                });
+                continue;
+            }
+        };
         let content = String::from_utf8_lossy(&bytes);
         let ext = desc_path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
 
@@ -168,14 +206,36 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
         };
 
         let mut binary_tracks = Vec::new();
+        let mut skip_reason: Option<String> = None;
         for filename in raw_refs {
             match cue_parser::resolve_path_case_insensitive(parent, &filename) {
                 Some(resolved) => {
-                    paired_tracks.insert(resolved.clone());
+                    if !is_under_root(root, &resolved) {
+                        skip_reason = Some(format!(
+                            "Track reference escapes the scan root: {}",
+                            filename
+                        ));
+                        break;
+                    }
                     binary_tracks.push(resolved);
                 }
-                None => return Err(ScannerError::MissingTrack(parent.join(filename))),
+                None => {
+                    skip_reason = Some(format!("Referenced track not found: {}", filename));
+                    break;
+                }
             }
+        }
+
+        if let Some(reason) = skip_reason {
+            skipped.push(SkippedDisc {
+                descriptor: desc_path,
+                reason,
+            });
+            continue;
+        }
+
+        for track in &binary_tracks {
+            paired_tracks.insert(track.clone());
         }
 
         let mut total_bytes = 0u64;
@@ -225,5 +285,8 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
     }
 
     fingerprints.sort_by(|a, b| a.primary_file.cmp(&b.primary_file));
-    Ok(fingerprints)
+    Ok(ScanResult {
+        fingerprints,
+        skipped,
+    })
 }

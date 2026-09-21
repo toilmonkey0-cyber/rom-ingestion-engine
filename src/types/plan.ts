@@ -10,7 +10,34 @@ export interface PlannedDisc {
   disc_number: number;
   source_descriptor: string;
   target_chd_path: string;
+  relative_m3u_entry?: string | null;
   status: TaskStatus;
+}
+
+/** Per-platform folder overrides for the `custom` frontend preset. */
+export interface CustomPresetConfig {
+  psx: string;
+  saturn: string;
+  dreamcast: string;
+  sega_cd: string;
+  pce_cd: string;
+  unknown: string;
+  multidisc_subfolder: string;
+}
+
+export interface SkippedSource {
+  path: string;
+  reason: string;
+}
+
+export interface IngestionPlan {
+  input_dir: string;
+  output_dir: string;
+  preset: FrontendPreset;
+  games: PlannedGame[];
+  skipped_sources: SkippedSource[];
+  total_source_bytes: number;
+  estimated_output_bytes: number;
 }
 
 export interface PlannedGame {
@@ -25,15 +52,6 @@ export interface PlannedGame {
   source: ClassificationSource;
   enabled: boolean;
   needs_review: boolean;
-}
-
-export interface IngestionPlan {
-  input_dir: string;
-  output_dir: string;
-  preset: FrontendPreset;
-  games: PlannedGame[];
-  total_source_bytes: number;
-  estimated_output_bytes: number;
 }
 
 export interface JobProgressEvent {

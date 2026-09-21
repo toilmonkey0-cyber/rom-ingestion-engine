@@ -115,42 +115,62 @@ pub fn get_platform_manifest(os: &str, arch: &str) -> Option<PlatformManifest> {
         ("windows", "x86_64") => Some(PlatformManifest {
             os: "windows",
             arch: "x86_64",
-            download_url: "https://github.com/a37103/chdman-binaries/releases/download/v0.268/chdman-win-x64.zip",
-            expected_sha256: "9b3fb6c3a1e4d0d3d526fc8e030a58a74e5cc05b630e2f5b892ad018b14a8726",
-            archive_format: ArchiveFormat::Zip,
-            format: ArchiveFormat::Zip,
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-win32-x64/-/chdman-win32-x64-0.289.0.tgz",
+            expected_sha256: "84f8d9673b9a29c45dd3df05d3d7164b8bce463d42973114484de8cb489ed3ae",
+            archive_format: ArchiveFormat::TarGz,
+            format: ArchiveFormat::TarGz,
             binary_name: "chdman.exe",
-            version: "0.268",
+            version: "0.289",
+        }),
+        ("windows", "aarch64") => Some(PlatformManifest {
+            os: "windows",
+            arch: "aarch64",
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-win32-arm64/-/chdman-win32-arm64-0.289.0.tgz",
+            expected_sha256: "af6390b5c79386474e1bb682e926df4036b8fad34eb6daf2ad27f8e738fce5aa",
+            archive_format: ArchiveFormat::TarGz,
+            format: ArchiveFormat::TarGz,
+            binary_name: "chdman.exe",
+            version: "0.289",
         }),
         ("linux", "x86_64") => Some(PlatformManifest {
             os: "linux",
             arch: "x86_64",
-            download_url: "https://github.com/a37103/chdman-binaries/releases/download/v0.268/chdman-linux-x64.tar.gz",
-            expected_sha256: "c3e6d9f5a4b72130e9c8a6f4d32b0e9a1c7f5d3e2a0c9b8f7e6d5c4b3a2e1f0d",
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-linux-x64/-/chdman-linux-x64-0.289.0.tgz",
+            expected_sha256: "aafad6be5d6fe078de3bcba38d9923273c37e193b83bd5c222974d7900ea41ff",
             archive_format: ArchiveFormat::TarGz,
             format: ArchiveFormat::TarGz,
             binary_name: "chdman",
-            version: "0.268",
+            version: "0.289",
+        }),
+        ("linux", "aarch64") => Some(PlatformManifest {
+            os: "linux",
+            arch: "aarch64",
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-linux-arm64/-/chdman-linux-arm64-0.289.0.tgz",
+            expected_sha256: "35781495fc513fc6b189933400743afd6cd1825551077b20722e8fab3ea148ac",
+            archive_format: ArchiveFormat::TarGz,
+            format: ArchiveFormat::TarGz,
+            binary_name: "chdman",
+            version: "0.289",
         }),
         ("macos", "aarch64") => Some(PlatformManifest {
             os: "macos",
             arch: "aarch64",
-            download_url: "https://github.com/a37103/chdman-binaries/releases/download/v0.268/chdman-darwin-arm64.tar.gz",
-            expected_sha256: "a1c4b7d3e2f50918c7a6e4d2b10f8c7e9a5d3b1c0e8a7f6d5c4b3a2e1f0d9c8b",
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-darwin-arm64/-/chdman-darwin-arm64-0.289.0.tgz",
+            expected_sha256: "e608ca6418a2c22a26ccd037921b0763446ac3d37860b5e3fd15b032bcff8abf",
             archive_format: ArchiveFormat::TarGz,
             format: ArchiveFormat::TarGz,
             binary_name: "chdman",
-            version: "0.268",
+            version: "0.289",
         }),
         ("macos", "x86_64") => Some(PlatformManifest {
             os: "macos",
             arch: "x86_64",
-            download_url: "https://github.com/a37103/chdman-binaries/releases/download/v0.268/chdman-darwin-x64.tar.gz",
-            expected_sha256: "b2d5c8e4f3a61029d8b7f5e3c21a9d8f0b6e4c2d1f9b8a7e6d5c4b3a2e1f0d9c",
+            download_url: "https://registry.npmjs.org/@emmercm/chdman-darwin-x64/-/chdman-darwin-x64-0.289.0.tgz",
+            expected_sha256: "1db94fa98855819386a821e41d1af81ca2d5ae682f06d462503214d9d0bf09cb",
             archive_format: ArchiveFormat::TarGz,
             format: ArchiveFormat::TarGz,
             binary_name: "chdman",
-            version: "0.268",
+            version: "0.289",
         }),
         _ => None,
     }
@@ -308,7 +328,24 @@ pub fn extract_archive<P: AsRef<Path>, Q: AsRef<Path>>(
                     drop(out_file);
                     set_executable_permissions(&target_path)?;
                     found = true;
-                    break;
+                    continue; // keep scanning for bundled shared libraries
+                }
+
+                // macOS builds bundle dylibs (e.g. libSDL3.0.dylib) next to
+                // the binary; without them the extracted chdman fails to load.
+                #[cfg(target_os = "macos")]
+                {
+                    if entry_path
+                        .extension()
+                        .map(|e| e == "dylib")
+                        .unwrap_or(false)
+                    {
+                        if let Some(name) = entry_path.file_name() {
+                            let dylib_path = dest_dir.join(name);
+                            let mut out_file = File::create(&dylib_path)?;
+                            std::io::copy(&mut entry, &mut out_file)?;
+                        }
+                    }
                 }
             }
 

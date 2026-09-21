@@ -23,10 +23,15 @@ function formatBytes(bytes: number): string {
 }
 
 export const Step4Summary: React.FC = () => {
-  const { summary, isTrashing, trashedCount, trashSourceFiles, reset, error } =
-    useIngestionStore();
+  const summary = useIngestionStore((s) => s.summary);
+  const isTrashing = useIngestionStore((s) => s.isTrashing);
+  const trashedCount = useIngestionStore((s) => s.trashedCount);
+  const trashSourceFiles = useIngestionStore((s) => s.trashSourceFiles);
+  const reset = useIngestionStore((s) => s.reset);
+  const error = useIngestionStore((s) => s.error);
 
   const [showTrashModal, setShowTrashModal] = useState(false);
+  const [trashError, setTrashError] = useState<string | null>(null);
 
   const totalSource = summary?.total_source_bytes ?? 0;
   const totalOutput = summary?.total_output_bytes ?? 0;
@@ -34,49 +39,120 @@ export const Step4Summary: React.FC = () => {
   const savingsPct =
     totalSource > 0 ? Math.round((savedBytes / totalSource) * 100) : 0;
 
+  const failedGames = summary?.failed_games ?? 0;
+  const successfulGames = summary?.successful_games ?? 0;
+  const allFailed = summary !== null && successfulGames === 0;
+  const partialFailure = summary !== null && failedGames > 0 && successfulGames > 0;
+
   const filesToTrash = summary?.source_files_to_trash ?? [];
   const hasFilesToTrash = filesToTrash.length > 0 && trashedCount === null;
 
   const handleConfirmTrash = async () => {
+    setTrashError(null);
     try {
       await trashSourceFiles();
       setShowTrashModal(false);
-    } catch {
-      // Error handled by store
+    } catch (err: unknown) {
+      // Keep the modal open and show the error inside it — the page-level
+      // banner is hidden behind the modal overlay.
+      const msg = err instanceof Error ? err.message : String(err);
+      setTrashError(msg);
     }
   };
 
+  const heroIcon = allFailed || partialFailure ? (
+    <AlertTriangle className="w-8 h-8 text-amber-400" />
+  ) : (
+    <ShieldCheck className="w-8 h-8 text-emerald-400" />
+  );
+
   return (
     <div className="max-w-4xl mx-auto space-y-8 py-6 px-4">
-      {/* Hero Success Card */}
-      <div className="bg-gradient-to-r from-emerald-950/40 via-slate-900 to-slate-900 border border-emerald-800/50 rounded-2xl p-6 shadow-2xl relative overflow-hidden">
+      {/* Hero Result Card */}
+      <div
+        className={`bg-gradient-to-r ${
+          allFailed
+            ? 'from-red-950/40 via-slate-900 to-slate-900 border-red-800/50'
+            : partialFailure
+            ? 'from-amber-950/40 via-slate-900 to-slate-900 border-amber-800/50'
+            : 'from-emerald-950/40 via-slate-900 to-slate-900 border-emerald-800/50'
+        } border rounded-2xl p-6 shadow-2xl relative overflow-hidden`}
+      >
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-6">
           <div className="flex items-center space-x-4">
-            <div className="w-14 h-14 rounded-2xl bg-emerald-500/10 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0 shadow-lg shadow-emerald-500/10">
-              <ShieldCheck className="w-8 h-8" />
+            <div
+              className={`w-14 h-14 rounded-2xl border flex items-center justify-center shrink-0 shadow-lg ${
+                allFailed
+                  ? 'bg-red-500/10 border-red-500/30 text-red-400 shadow-red-500/10'
+                  : partialFailure
+                  ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 shadow-amber-500/10'
+                  : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400 shadow-emerald-500/10'
+              }`}
+            >
+              {heroIcon}
             </div>
             <div>
-              <div className="inline-flex items-center space-x-1.5 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                <span>100% Verified & Validated</span>
-              </div>
-              <h2 className="text-2xl font-bold text-white tracking-tight">
-                Ingestion Completed Successfully!
-              </h2>
-              <p className="text-xs text-slate-300 mt-1 max-w-lg">
-                All planned disc images have been compressed to bit-perfect lossless CHD format and M3U playlists
-                have been generated for multi-disc titles.
-              </p>
+              {allFailed ? (
+                <>
+                  <div className="inline-flex items-center space-x-1.5 text-red-400 text-xs font-bold uppercase tracking-wider mb-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>No Games Ingested</span>
+                  </div>
+                  <h2 className="text-2xl font-bold text-white tracking-tight">
+                    Ingestion Failed
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-1 max-w-lg">
+                    All {failedGames} planned game(s) failed to convert. Your original source files were
+                    not modified. Check the execution log on the previous screen for chdman error details.
+                  </p>
+                </>
+              ) : partialFailure ? (
+                <>
+                  <div className="inline-flex items-center space-x-1.5 text-amber-400 text-xs font-bold uppercase tracking-wider mb-1">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    <span>Completed with Failures</span>
+                  </div>
+                  <h2 className="text-2xl font-bold text-white tracking-tight">
+                    {successfulGames} Succeeded, {failedGames} Failed
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-1 max-w-lg">
+                    Some games could not be converted and their source files were left untouched.
+                    Only fully verified games are eligible for source cleanup below.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <div className="inline-flex items-center space-x-1.5 text-emerald-400 text-xs font-bold uppercase tracking-wider mb-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    <span>Verified & Validated</span>
+                  </div>
+                  <h2 className="text-2xl font-bold text-white tracking-tight">
+                    Ingestion Completed Successfully!
+                  </h2>
+                  <p className="text-xs text-slate-300 mt-1 max-w-lg">
+                    All planned disc images have been compressed to bit-perfect lossless CHD format and M3U playlists
+                    have been generated for multi-disc titles.
+                  </p>
+                </>
+              )}
             </div>
           </div>
 
-          <div className="bg-emerald-950/60 border border-emerald-800/80 rounded-xl px-5 py-3 text-center self-start sm:self-auto shrink-0">
-            <div className="text-2xl font-black text-emerald-400 font-mono">
+          <div
+            className={`border rounded-xl px-5 py-3 text-center self-start sm:self-auto shrink-0 ${
+              allFailed || partialFailure
+                ? 'bg-slate-950/60 border-slate-700/80'
+                : 'bg-emerald-950/60 border-emerald-800/80'
+            }`}
+          >
+            <div
+              className={`text-2xl font-black font-mono ${
+                allFailed || partialFailure ? 'text-slate-300' : 'text-emerald-400'
+              }`}
+            >
               {savingsPct}%
             </div>
-            <div className="text-[11px] text-emerald-200/80 font-medium">
-              Space Saved
-            </div>
+            <div className="text-[11px] text-slate-400 font-medium">Space Saved</div>
           </div>
         </div>
       </div>
@@ -89,14 +165,22 @@ export const Step4Summary: React.FC = () => {
       )}
 
       {/* Metrics Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+      <div className={`grid grid-cols-2 sm:grid-cols-4 gap-4 ${failedGames > 0 ? 'sm:grid-cols-5' : ''}`}>
         <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 text-center">
           <FileCheck className="w-5 h-5 text-cyan-400 mx-auto mb-2" />
           <div className="text-2xl font-bold text-white font-mono">
-            {summary?.successful_games ?? 0}
+            {successfulGames}
           </div>
           <div className="text-xs text-slate-400">Games Ingested</div>
         </div>
+
+        {failedGames > 0 && (
+          <div className="bg-slate-900/60 border border-red-900/60 rounded-xl p-4 text-center">
+            <AlertTriangle className="w-5 h-5 text-red-400 mx-auto mb-2" />
+            <div className="text-2xl font-bold text-red-400 font-mono">{failedGames}</div>
+            <div className="text-xs text-slate-400">Games Failed</div>
+          </div>
+        )}
 
         <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 text-center">
           <Layers className="w-5 h-5 text-indigo-400 mx-auto mb-2" />
@@ -216,6 +300,16 @@ export const Step4Summary: React.FC = () => {
                 </span>
               </div>
             </div>
+
+            {trashError && (
+              <div className="bg-red-950/60 border border-red-800/60 rounded-xl p-3 text-red-300 flex items-start space-x-2 text-xs">
+                <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+                <div className="flex-1">
+                  <p className="font-semibold mb-0.5">Nothing was moved to the trash.</p>
+                  <p className="text-red-200/80">{trashError}</p>
+                </div>
+              </div>
+            )}
 
             <div className="flex justify-end space-x-3">
               <button

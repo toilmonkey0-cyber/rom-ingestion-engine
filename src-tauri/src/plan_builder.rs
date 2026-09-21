@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use crate::models::{
     ClassificationSource, DiscFingerprint, FrontendPreset, GameClassification, IngestionPlan,
-    Platform, PlannedDisc, PlannedGame, TaskStatus,
+    Platform, PlannedDisc, PlannedGame, SkippedSource, TaskStatus,
 };
-use crate::organizer::presets::resolve_target_paths;
+use crate::organizer::presets::{resolve_target_paths_with_custom, CustomPresetConfig};
 
 /// Generates a clean, deterministic game ID for a planned game.
 fn generate_game_id(platform: Platform, title: &str, index: usize) -> String {
@@ -50,23 +50,35 @@ struct IntermediateDisc {
 
 /// Builds an `IngestionPlan` from classified disc fingerprints.
 ///
-/// Multi-disc items of the same canonical title and platform are merged into
-/// single `PlannedGame` instances, sorted by disc number, with target `.chd` paths
-/// and optional `.m3u` playlists determined according to the target frontend preset.
+/// Multi-disc items of the same canonical title, platform **and region** are
+/// merged into single `PlannedGame` instances, sorted by disc number, with
+/// target `.chd` paths and optional `.m3u` playlists determined according to
+/// the target frontend preset (honoring `custom_config` for `Custom`).
+/// Discs skipped during scanning are passed through for UI reporting.
 pub fn build_ingestion_plan(
     input_dir: PathBuf,
     output_dir: PathBuf,
     preset: FrontendPreset,
+    custom_config: Option<&CustomPresetConfig>,
     items: Vec<(DiscFingerprint, GameClassification)>,
+    skipped_sources: Vec<SkippedSource>,
 ) -> IngestionPlan {
-    // 1. Group items by (platform, canonical_title.to_lowercase())
-    let mut groups: Vec<((Platform, String), Vec<(DiscFingerprint, GameClassification)>)> =
-        Vec::new();
+    // 1. Group items by (platform, canonical_title.to_lowercase(), region).
+    // Region is part of the key: USA and Europe dumps of the same title are
+    // different games and must not be merged into one multi-disc set.
+    let mut groups: Vec<
+        ((Platform, String, String), Vec<(DiscFingerprint, GameClassification)>),
+    > = Vec::new();
 
     for (fingerprint, classification) in items {
+        let region_key = classification
+            .region
+            .trim()
+            .to_lowercase();
         let key = (
             classification.platform,
             classification.canonical_title.trim().to_lowercase(),
+            region_key,
         );
         if let Some((_, group)) = groups.iter_mut().find(|(k, _)| *k == key) {
             group.push((fingerprint, classification));
@@ -80,7 +92,7 @@ pub fn build_ingestion_plan(
     let mut total_source_bytes: u64 = 0;
 
     // 2. Build planned games
-    for (group_idx, ((platform, _), group)) in groups.into_iter().enumerate() {
+    for (group_idx, ((platform, _, _), group)) in groups.into_iter().enumerate() {
         let is_multidisc = group.len() > 1 || group.iter().any(|(_, c)| c.is_multidisc);
 
         // Pick best classification for canonical metadata
@@ -170,9 +182,10 @@ pub fn build_ingestion_plan(
         let mut target_m3u_path = None;
 
         for disc in &temp_discs {
-            let target_paths = resolve_target_paths(
+            let target_paths = resolve_target_paths_with_custom(
                 &output_dir,
                 preset,
+                custom_config,
                 platform,
                 &canonical_title,
                 &region,
@@ -189,6 +202,7 @@ pub fn build_ingestion_plan(
                 disc_number: disc.disc_number,
                 source_descriptor: disc.source_descriptor.clone(),
                 target_chd_path: target_paths.chd_path,
+                relative_m3u_entry: target_paths.relative_m3u_entry,
                 status: TaskStatus::Pending,
             });
         }
@@ -224,6 +238,7 @@ pub fn build_ingestion_plan(
         output_dir,
         preset,
         games: planned_games,
+        skipped_sources,
         total_source_bytes,
         estimated_output_bytes,
     }

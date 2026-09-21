@@ -20,6 +20,7 @@ async fn test_scan_and_plan_invalid_directory() {
         "out".to_string(),
         FrontendPreset::EsDe,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -48,6 +49,7 @@ async fn test_scan_and_plan_success_with_fallback() {
         psx_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::EsDe,
+        None,
         None,
     )
     .await
@@ -86,6 +88,7 @@ async fn test_execute_plan_single_disc_success() {
         disc_number: 1,
         source_descriptor: cue_path.clone(),
         target_chd_path: target_chd.clone(),
+        relative_m3u_entry: None,
         status: TaskStatus::Pending,
     };
 
@@ -107,6 +110,7 @@ async fn test_execute_plan_single_disc_success() {
         input_dir: in_dir.clone(),
         output_dir: out_dir.clone(),
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![game],
         total_source_bytes: 2048,
         estimated_output_bytes: 1200,
@@ -186,12 +190,14 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
                 disc_number: 1,
                 source_descriptor: cue1.clone(),
                 target_chd_path: chd1.clone(),
+        relative_m3u_entry: None,
                 status: TaskStatus::Pending,
             },
             PlannedDisc {
                 disc_number: 2,
                 source_descriptor: cue2.clone(),
                 target_chd_path: chd2.clone(),
+        relative_m3u_entry: None,
                 status: TaskStatus::Pending,
             },
         ],
@@ -206,6 +212,7 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
         input_dir: in_dir,
         output_dir: out_dir,
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![game],
         total_source_bytes: 1_400_000,
         estimated_output_bytes: 840_000,
@@ -248,6 +255,7 @@ async fn test_execute_plan_skipped_when_disabled() {
             disc_number: 1,
             source_descriptor: cue,
             target_chd_path: dir.path().join("out.chd"),
+        relative_m3u_entry: None,
             status: TaskStatus::Pending,
         }],
         target_m3u_path: None,
@@ -261,6 +269,7 @@ async fn test_execute_plan_skipped_when_disabled() {
         input_dir: dir.path().to_path_buf(),
         output_dir: dir.path().to_path_buf(),
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![game],
         total_source_bytes: 0,
         estimated_output_bytes: 0,
@@ -299,6 +308,7 @@ async fn test_execute_plan_failure_handling() {
             disc_number: 1,
             source_descriptor: cue,
             target_chd_path: dir.path().join("out.chd"),
+        relative_m3u_entry: None,
             status: TaskStatus::Pending,
         }],
         target_m3u_path: None,
@@ -312,6 +322,7 @@ async fn test_execute_plan_failure_handling() {
         input_dir: dir.path().to_path_buf(),
         output_dir: dir.path().to_path_buf(),
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![game],
         total_source_bytes: 0,
         estimated_output_bytes: 0,
@@ -343,17 +354,51 @@ fn test_trash_source_files() {
     assert!(file1.exists());
     assert!(file2.exists());
 
+    // Duplicates are deduplicated and still trashed.
     let files_to_trash = vec![
         file1.to_string_lossy().to_string(),
         file2.to_string_lossy().to_string(),
         file1.to_string_lossy().to_string(), // duplicate
-        "non_existent_file_9999.bin".to_string(), // non-existent
     ];
 
-    let count = trash_source_files(files_to_trash).unwrap();
+    let count = trash_source_files(files_to_trash, None).unwrap();
     assert_eq!(count, 2);
     assert!(!file1.exists());
     assert!(!file2.exists());
+}
+
+#[test]
+fn test_trash_source_files_rejects_invalid_input_atomically() {
+    let dir = tempdir().unwrap();
+    let good = dir.path().join("good.bin");
+    let bad_ext = dir.path().join("danger.exe");
+    File::create(&good).unwrap().write_all(b"123").unwrap();
+    File::create(&bad_ext).unwrap().write_all(b"456").unwrap();
+
+    // Non-image extensions are rejected, and nothing is trashed as a result.
+    let err = trash_source_files(
+        vec![
+            good.to_string_lossy().to_string(),
+            bad_ext.to_string_lossy().to_string(),
+        ],
+        None,
+    )
+    .unwrap_err();
+    assert!(err.contains("not a disc-image file"), "got: {}", err);
+    assert!(good.exists(), "validation must happen before any deletion");
+    assert!(bad_ext.exists());
+
+    // Non-existent paths are rejected too.
+    let err2 = trash_source_files(vec!["non_existent_file_9999.bin".to_string()], None).unwrap_err();
+    assert!(err2.contains("no longer exists"), "got: {}", err2);
+
+    // Containment: a valid image outside the given base dir is refused.
+    let err3 = trash_source_files(
+        vec![good.to_string_lossy().to_string()],
+        Some(dir.path().join("nested").to_string_lossy().to_string()),
+    )
+    .unwrap_err();
+    assert!(err3.contains("outside the scanned library"), "got: {}", err3);
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@ fn test_models_json_roundtrip() {
         disc_number: 1,
         source_descriptor: PathBuf::from("C:/Roms/FF7_Disc1.cue"),
         target_chd_path: PathBuf::from("C:/Output/psx/.discs/Final Fantasy VII (USA) (Disc 1).chd"),
+        relative_m3u_entry: None,
         status: TaskStatus::Pending,
     };
 
@@ -28,6 +29,7 @@ fn test_models_json_roundtrip() {
         input_dir: PathBuf::from("C:/Roms"),
         output_dir: PathBuf::from("C:/Output"),
         preset: FrontendPreset::AnbernicStock,
+        skipped_sources: Vec::new(),
         games: vec![game],
         total_source_bytes: 700_000_000,
         estimated_output_bytes: 450_000_000,

@@ -288,8 +288,16 @@ pub fn parse_jev_response(
         .ok_or_else(|| JevError::MissingAnswer("platform".to_string()))?;
     let platform = match platform_ans {
         JevAnswer::Choice(c) => {
-            confidences.push(c.confidence);
-            crate::classifier::redump::parse_platform(&c.choice)
+            let parsed = crate::classifier::redump::parse_platform(&c.choice);
+            if parsed == crate::models::Platform::Unknown {
+                // The model answered outside the expected vocabulary: keep the
+                // answer's uncertainty visible instead of a confident Unknown,
+                // so downstream `needs_review` triggers.
+                confidences.push(c.confidence * 0.25);
+            } else {
+                confidences.push(c.confidence);
+            }
+            parsed
         }
         JevAnswer::Noul(_) => {
             return Err(JevError::InvalidAnswerType {
@@ -346,14 +354,23 @@ pub fn parse_jev_response(
         None
     };
 
-    // 4. Region
+    // 4. Region — model answers are validated against the known region
+    // vocabulary: anything else (typos, hallucinations, path-unsafe strings)
+    // falls back to the filename, then "Unknown". The raw answer never
+    // becomes a filesystem path component.
     let region = if let Some(ans) = resp.answers.get("region") {
         match ans {
             JevAnswer::Choice(c) => {
+                let normalized = crate::classifier::redump::extract_region(&format!("({})", c.choice))
+                    .unwrap_or_else(|| {
+                        crate::classifier::redump::extract_region(original_filename)
+                            .unwrap_or_else(|| "Unknown".to_string())
+                    });
                 confidences.push(c.confidence);
-                c.choice.clone()
+                normalized
             }
-            JevAnswer::Noul(_) => "Unknown".to_string(),
+            JevAnswer::Noul(_) => crate::classifier::redump::extract_region(original_filename)
+                .unwrap_or_else(|| "Unknown".to_string()),
         }
     } else {
         crate::classifier::redump::extract_region(original_filename)
@@ -419,12 +436,22 @@ pub struct JevClient {
 }
 
 impl JevClient {
+    /// Builds the shared HTTP client: bounded connect/total timeouts so a slow
+    /// or hung endpoint cannot stall the scan command indefinitely.
+    fn build_http_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(45))
+            .build()
+            .expect("reqwest client with timeouts builds successfully")
+    }
+
     /// Creates a new `JevClient` with default production endpoint `https://api.typesafe.ai/v1/systemone`.
     pub fn new(api_key: String) -> Self {
         Self {
             api_key,
             base_url: JEV_DEFAULT_ENDPOINT.to_string(),
-            client: reqwest::Client::new(),
+            client: Self::build_http_client(),
             initial_backoff: Duration::from_millis(200),
             max_retries: 3,
         }
@@ -435,7 +462,7 @@ impl JevClient {
         Self {
             api_key,
             base_url,
-            client: reqwest::Client::new(),
+            client: Self::build_http_client(),
             initial_backoff: Duration::from_millis(50),
             max_retries: 3,
         }

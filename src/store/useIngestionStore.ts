@@ -7,6 +7,7 @@ import {
   GameStatusEvent,
   ChdmanStatus,
   DownloadProgressEvent,
+  CustomPresetConfig,
 } from '../types/plan';
 import {
   scanAndPlanApi,
@@ -15,6 +16,7 @@ import {
   checkChdmanStatusApi,
   downloadChdmanApi,
   setCustomChdmanPathApi,
+  DEFAULT_CUSTOM_PRESET,
 } from '../services/tauri';
 
 export interface IngestionState {
@@ -22,12 +24,14 @@ export interface IngestionState {
   inputDir: string;
   outputDir: string;
   preset: FrontendPreset;
+  customPresetConfig: CustomPresetConfig;
   apiKey: string;
   plan: IngestionPlan | null;
   isScanning: boolean;
   isExecuting: boolean;
   isTrashing: boolean;
   trashedCount: number | null;
+  /** Progress keyed by `${game_id}:${disc_number}` — discs of one game run concurrently. */
   gameProgress: Record<string, number>;
   activeLogs: string[];
   summary: ExecutionSummary | null;
@@ -46,6 +50,7 @@ export interface IngestionState {
   setInputDir: (dir: string) => void;
   setOutputDir: (dir: string) => void;
   setPreset: (preset: FrontendPreset) => void;
+  setCustomPresetFolder: (field: keyof CustomPresetConfig, value: string) => void;
   setApiKey: (key: string) => void;
   setError: (error: string | null) => void;
   updateGameTitle: (gameId: string, newTitle: string) => void;
@@ -65,6 +70,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   inputDir: '',
   outputDir: '',
   preset: 'anbernicstock',
+  customPresetConfig: { ...DEFAULT_CUSTOM_PRESET },
   apiKey: '',
   plan: null,
   isScanning: false,
@@ -86,6 +92,10 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   setInputDir: (inputDir) => set({ inputDir }),
   setOutputDir: (outputDir) => set({ outputDir }),
   setPreset: (preset) => set({ preset }),
+  setCustomPresetFolder: (field, value) =>
+    set((state) => ({
+      customPresetConfig: { ...state.customPresetConfig, [field]: value },
+    })),
   setApiKey: (apiKey) => set({ apiKey }),
   setError: (error) => set({ error }),
 
@@ -115,7 +125,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   },
 
   startScan: async () => {
-    const { inputDir, outputDir, preset, apiKey } = get();
+    const { inputDir, outputDir, preset, apiKey, customPresetConfig } = get();
     if (!inputDir.trim()) {
       set({ error: 'Please specify an input folder with your disc dumps.' });
       return;
@@ -127,7 +137,13 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
 
     set({ isScanning: true, error: null });
     try {
-      const plan = await scanAndPlanApi(inputDir, outputDir, preset, apiKey);
+      const plan = await scanAndPlanApi(
+        inputDir,
+        outputDir,
+        preset,
+        apiKey,
+        preset === 'custom' ? customPresetConfig : null
+      );
       set({ plan, step: 2, isScanning: false });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -136,23 +152,30 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   },
 
   startExecution: async () => {
-    const { plan } = get();
+    const { plan, isExecuting } = get();
     if (!plan) return;
+    if (isExecuting) return; // reentrancy guard: never run two pipelines at once
 
     set({
       isExecuting: true,
       step: 3,
       error: null,
+      summary: null,
       activeLogs: [
         `[${new Date().toLocaleTimeString()}] Starting conversion engine (preset: ${plan.preset})...`,
       ],
       gameProgress: {},
     });
 
+    // Discs of one game run concurrently on the backend, so progress is keyed
+    // per disc and averaged per game when displayed.
     const onProgress = (event: JobProgressEvent) => {
       const log = `[${new Date().toLocaleTimeString()}] [Disc ${event.disc_number}] ${event.message}`;
       set((state) => ({
-        gameProgress: { ...state.gameProgress, [event.game_id]: event.progress },
+        gameProgress: {
+          ...state.gameProgress,
+          [`${event.game_id}:${event.disc_number}`]: event.progress,
+        },
         activeLogs: [...state.activeLogs.slice(-150), log],
       }));
     };
@@ -174,7 +197,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
         step: 4,
         activeLogs: [
           ...get().activeLogs,
-          `[${new Date().toLocaleTimeString()}] Ingestion pipeline completed successfully.`,
+          `[${new Date().toLocaleTimeString()}] Ingestion pipeline finished: ${summary.successful_games} succeeded, ${summary.failed_games} failed.`,
         ],
       });
     } catch (err: unknown) {
@@ -191,14 +214,17 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   },
 
   trashSourceFiles: async () => {
-    const { summary } = get();
+    const { summary, plan } = get();
     if (!summary || summary.source_files_to_trash.length === 0) {
       return 0;
     }
 
     set({ isTrashing: true, error: null });
     try {
-      const count = await trashSourceFilesApi(summary.source_files_to_trash);
+      const count = await trashSourceFilesApi(
+        summary.source_files_to_trash,
+        plan?.input_dir ?? null
+      );
       set({ trashedCount: count, isTrashing: false });
       return count;
     } catch (err: unknown) {

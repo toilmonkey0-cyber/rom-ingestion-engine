@@ -27,33 +27,43 @@ const PRESET_OPTIONS: PresetOption[] = [
     id: 'anbernicstock',
     title: 'Anbernic Stock OS',
     badge: 'Recommended',
-    description: 'Optimized for RG35XX / RG40XX series with clean M3U playlists and hidden .multidisc directory.',
-    multidiscFolder: '.multidisc/',
+    description: 'Optimized for RG35XX / RG40XX series with clean M3U playlists and hidden .discs directory.',
+    multidiscFolder: '.discs/',
   },
   {
     id: 'onionos',
     title: 'OnionOS / GarlicOS',
-    description: 'For Miyoo Mini and GarlicOS handhelds. Automatically structures multi-disc games into .multidisc.',
-    multidiscFolder: '.multidisc/',
+    description: 'For Miyoo Mini and GarlicOS handhelds. Automatically structures multi-disc games into .discs.',
+    multidiscFolder: '.discs/',
   },
   {
     id: 'esde',
     title: 'ES-DE (EmulationStation)',
-    description: 'Clean desktop standard with _multidisc hidden subdirectories and ES-DE metadata scraping compatibility.',
-    multidiscFolder: '_multidisc/',
+    description: 'Clean desktop standard with hidden .discs subdirectories and ES-DE metadata scraping compatibility.',
+    multidiscFolder: '.discs/',
   },
   {
     id: 'batocera',
     title: 'Batocera / Knulli',
     description: 'Root folder playlists with discs organized for direct retroarch-mame / flycast core indexing.',
-    multidiscFolder: 'multidisc/',
+    multidiscFolder: '.discs/',
   },
   {
     id: 'custom',
     title: 'Custom Standard',
-    description: 'Standard flat M3U layout with CHD tracks alongside or in custom subdirectories.',
-    multidiscFolder: '.multidisc/',
+    description: 'Define your own per-platform folders and multi-disc subfolder below.',
+    multidiscFolder: 'configurable',
   },
+];
+
+const CUSTOM_FOLDER_FIELDS: { field: keyof import('../types/plan').CustomPresetConfig; label: string; placeholder: string }[] = [
+  { field: 'psx', label: 'PlayStation', placeholder: 'roms/psx' },
+  { field: 'saturn', label: 'Sega Saturn', placeholder: 'roms/saturn' },
+  { field: 'dreamcast', label: 'Dreamcast', placeholder: 'roms/dreamcast' },
+  { field: 'sega_cd', label: 'Sega CD / Mega CD', placeholder: 'roms/segacd' },
+  { field: 'pce_cd', label: 'PC Engine CD / TurboGrafx-CD', placeholder: 'roms/pcenginecd' },
+  { field: 'unknown', label: 'Unrecognized', placeholder: 'roms/unknown' },
+  { field: 'multidisc_subfolder', label: 'Multi-disc subfolder', placeholder: '.discs' },
 ];
 
 export const Step1Config: React.FC = () => {
@@ -61,6 +71,7 @@ export const Step1Config: React.FC = () => {
     inputDir,
     outputDir,
     preset,
+    customPresetConfig,
     apiKey,
     isScanning,
     error,
@@ -73,6 +84,7 @@ export const Step1Config: React.FC = () => {
     setInputDir,
     setOutputDir,
     setPreset,
+    setCustomPresetFolder,
     setApiKey,
     startScan,
     checkChdmanStatus,
@@ -257,6 +269,35 @@ export const Step1Config: React.FC = () => {
             );
           })}
         </div>
+
+        {preset === 'custom' && (
+          <div className="mt-4 pt-4 border-t border-slate-800 space-y-4">
+            <h4 className="text-sm font-semibold text-white flex items-center space-x-2">
+              <Info className="w-4 h-4 text-cyan-400" />
+              <span>Custom Folder Layout</span>
+            </h4>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {CUSTOM_FOLDER_FIELDS.map(({ field, label, placeholder }) => (
+                <div key={field} className="space-y-1.5">
+                  <label className="text-[11px] font-semibold text-slate-400 uppercase tracking-wide">
+                    {label}
+                  </label>
+                  <input
+                    type="text"
+                    value={customPresetConfig[field]}
+                    onChange={(e) => setCustomPresetFolder(field, e.target.value)}
+                    placeholder={placeholder}
+                    className="w-full px-3 py-2 bg-slate-950/70 border border-slate-700/80 rounded-lg text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
+                  />
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400">
+              Folders are relative to the target ingestion directory. Path separators and unsafe characters are
+              sanitized automatically.
+            </p>
+          </div>
+        )}
       </div>
 
       {/* Advanced / Optional AI Key */}

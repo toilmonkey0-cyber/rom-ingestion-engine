@@ -5,29 +5,68 @@ use rom_ingest_core::chdman::downloader::*;
 
 #[test]
 fn test_platform_manifest_resolution() {
-    let win_manifest = get_platform_manifest("windows", "x86_64");
-    assert!(win_manifest.is_some());
-    let m = win_manifest.unwrap();
-    assert_eq!(m.binary_name, "chdman.exe");
-    assert!(!m.download_url.is_empty());
-    assert_eq!(m.expected_sha256.len(), 64);
+    let combos = [
+        ("windows", "x86_64", "chdman.exe"),
+        ("windows", "aarch64", "chdman.exe"),
+        ("linux", "x86_64", "chdman"),
+        ("linux", "aarch64", "chdman"),
+        ("macos", "aarch64", "chdman"),
+        ("macos", "x86_64", "chdman"),
+    ];
 
-    let linux_manifest = get_platform_manifest("linux", "x86_64");
-    assert!(linux_manifest.is_some());
-    let l = linux_manifest.unwrap();
-    assert_eq!(l.binary_name, "chdman");
-    assert_eq!(l.archive_format, ArchiveFormat::TarGz);
+    for (os, arch, binary) in combos {
+        let manifest = get_platform_manifest(os, arch)
+            .unwrap_or_else(|| panic!("manifest must exist for {} {}", os, arch));
+        assert_eq!(manifest.binary_name, binary);
+        // Real, verifiable distribution: pinned HTTPS tarball + real hash.
+        assert!(
+            manifest.download_url.starts_with("https://registry.npmjs.org/@emmercm/chdman-"),
+            "URL must point at the pinned chdman distribution: {}",
+            manifest.download_url
+        );
+        assert!(
+            manifest.expected_sha256.len() == 64
+                && manifest.expected_sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+            "SHA-256 must be 64 hex characters (no placeholders)"
+        );
+        assert!(!manifest.version.is_empty());
+    }
 
-    let mac_arm = get_platform_manifest("darwin", "arm64");
-    assert!(mac_arm.is_some());
-    assert_eq!(mac_arm.unwrap().binary_name, "chdman");
-
-    let mac_x64 = get_platform_manifest("macos", "x86_64");
-    assert!(mac_x64.is_some());
-    assert_eq!(mac_x64.unwrap().binary_name, "chdman");
+    // A valid hash is never a visually patterned placeholder: guard against
+    // fabricated checksums sneaking back in.
+    for (os, arch) in [("windows", "x86_64"), ("linux", "x86_64"), ("macos", "x86_64")] {
+        let m = get_platform_manifest(os, arch).unwrap();
+        let tail = &m.expected_sha256[48..];
+        assert!(
+            tail != "7e6d5c4b3a2e1f0d",
+            "placeholder-looking checksum detected for {} {}", os, arch
+        );
+    }
 
     let unsupported = get_platform_manifest("freebsd", "sparc64");
     assert!(unsupported.is_none());
+}
+
+/// Live end-to-end check of the real download pipeline (network required).
+/// Run explicitly with: `cargo test --test downloader_test -- --ignored`.
+#[tokio::test]
+#[ignore = "performs a real network download"]
+async fn live_download_and_install_chdman_real_source() {
+    struct NoopSink;
+    impl rom_ingest_core::commands::EventSink for NoopSink {}
+
+    let manifest = get_platform_manifest(std::env::consts::OS, std::env::consts::ARCH)
+        .expect("manifest for the host platform");
+    let dir = tempdir().unwrap();
+    let dest = dir.path().join("bin");
+
+    let status = download_and_install_manifest(&manifest, &dest, &NoopSink)
+        .await
+        .expect("live download, checksum verification and extraction must succeed");
+    assert!(status.ready);
+    let installed = status.path.expect("installed path");
+    assert!(dest.join(manifest.binary_name).exists());
+    assert!(installed.contains("bin"));
 }
 
 #[test]

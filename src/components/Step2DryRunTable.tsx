@@ -106,6 +106,31 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 py-6 px-4">
+      {/* Discs skipped during scanning (missing tracks, escaping references) */}
+      {(store.plan?.skipped_sources?.length ?? 0) > 0 && (
+        <div className="bg-amber-950/30 border border-amber-800/50 rounded-xl p-4 flex items-start space-x-3 text-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-semibold text-amber-200 mb-1">
+              {store.plan!.skipped_sources!.length} disc(s) were skipped during scanning
+            </p>
+            <ul className="space-y-0.5 text-amber-200/70 font-mono">
+              {store.plan!.skipped_sources!.slice(0, 5).map((s, i) => (
+                <li key={i} className="truncate" title={s.reason}>
+                  {s.path} — {s.reason}
+                </li>
+              ))}
+              {store.plan!.skipped_sources!.length > 5 && (
+                <li>…and {store.plan!.skipped_sources!.length - 5} more</li>
+              )}
+            </ul>
+            <p className="text-amber-200/60 mt-1">
+              These discs are excluded from the plan. Fix the sheets or restore the referenced tracks, then rescan.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Top summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex items-center space-x-3.5 shadow-sm">

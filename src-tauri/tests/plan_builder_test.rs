@@ -45,7 +45,9 @@ fn test_multi_disc_plan_grouping() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::AnbernicStock,
+        None,
         vec![(disc1, class1), (disc2, class2)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -84,7 +86,9 @@ fn test_single_disc_plan_has_no_m3u() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(disc, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -138,7 +142,9 @@ fn test_discs_out_of_order_sorted_by_disc_number() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::OnionOs,
+        None,
         vec![(disc2, class2), (disc1, class1)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -172,7 +178,9 @@ fn test_low_confidence_sets_needs_review() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(disc, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -221,7 +229,9 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::Batocera,
+        None,
         vec![(disc1, class1), (disc2, class2)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);

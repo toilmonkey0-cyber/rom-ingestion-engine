@@ -66,6 +66,9 @@ pub struct PlannedDisc {
     pub disc_number: u8,
     pub source_descriptor: PathBuf,
     pub target_chd_path: PathBuf,
+    /// Forward-slash playlist entry for this disc, relative to the M3U location.
+    #[serde(default)]
+    pub relative_m3u_entry: Option<String>,
     pub status: TaskStatus,
 }
 
@@ -84,12 +87,23 @@ pub struct PlannedGame {
     pub needs_review: bool,
 }
 
+/// A disc discovered during scanning that was excluded from the plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkippedSource {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IngestionPlan {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub preset: FrontendPreset,
     pub games: Vec<PlannedGame>,
+    /// Discs found during scanning but excluded (missing tracks, references
+    /// escaping the scan root, unreadable sheets). Surfaced for the dry-run UI.
+    #[serde(default)]
+    pub skipped_sources: Vec<SkippedSource>,
     pub total_source_bytes: u64,
     pub estimated_output_bytes: u64,
 }
