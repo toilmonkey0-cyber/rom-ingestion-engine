@@ -26,6 +26,10 @@ tar = "0.4"
 tempfile = "3"
 
 [[bin]]
+name = "rom-ingest-app"
+path = "src/main.rs"
+
+[[bin]]
 name = "mock_chdman"
 path = "tests/bin/mock_chdman.rs"
 
