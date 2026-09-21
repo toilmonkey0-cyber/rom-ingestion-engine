@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   FolderInput,
   FolderOutput,
@@ -12,6 +12,7 @@ import {
 } from 'lucide-react';
 import { FrontendPreset } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
+import { ChdmanStatusBanner } from './ChdmanStatusBanner';
 
 interface PresetOption {
   id: FrontendPreset;
@@ -63,12 +64,36 @@ export const Step1Config: React.FC = () => {
     apiKey,
     isScanning,
     error,
+    chdmanStatus,
+    isDownloadingChdman,
+    chdmanDownloadProgress,
+    chdmanDownloadedBytes,
+    chdmanTotalBytes,
+    chdmanError,
     setInputDir,
     setOutputDir,
     setPreset,
     setApiKey,
     startScan,
+    checkChdmanStatus,
+    downloadChdman,
+    setCustomChdmanPath,
   } = useIngestionStore();
+
+  useEffect(() => {
+    checkChdmanStatus();
+  }, [checkChdmanStatus]);
+
+  const handleBrowseChdman = () => {
+    const defaultVal = chdmanStatus?.path || '';
+    const chosen = window.prompt(
+      'Enter absolute path to chdman binary (e.g. C:/Tools/chdman.exe):',
+      defaultVal
+    );
+    if (chosen && chosen.trim()) {
+      setCustomChdmanPath(chosen.trim());
+    }
+  };
 
   const handleFillDemo = () => {
     setInputDir('D:/Roms/Unsorted_Dumps');
@@ -108,6 +133,20 @@ export const Step1Config: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* chdman Engine Readiness Banner */}
+      <ChdmanStatusBanner
+        status={chdmanStatus}
+        isDownloading={isDownloadingChdman}
+        downloadProgress={chdmanDownloadProgress}
+        downloadedBytes={chdmanDownloadedBytes}
+        totalBytes={chdmanTotalBytes}
+        error={chdmanError}
+        onInstall={downloadChdman}
+        onBrowse={handleBrowseChdman}
+        onRetry={downloadChdman}
+        onChangePath={handleBrowseChdman}
+      />
 
       {error && (
         <div className="bg-red-950/40 border border-red-800/60 rounded-xl p-4 text-red-300 flex items-start space-x-3 text-sm">

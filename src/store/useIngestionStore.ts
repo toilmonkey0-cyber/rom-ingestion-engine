@@ -5,8 +5,17 @@ import {
   ExecutionSummary,
   JobProgressEvent,
   GameStatusEvent,
+  ChdmanStatus,
+  DownloadProgressEvent,
 } from '../types/plan';
-import { scanAndPlanApi, executePlanApi, trashSourceFilesApi } from '../services/tauri';
+import {
+  scanAndPlanApi,
+  executePlanApi,
+  trashSourceFilesApi,
+  checkChdmanStatusApi,
+  downloadChdmanApi,
+  setCustomChdmanPathApi,
+} from '../services/tauri';
 
 export interface IngestionState {
   step: 1 | 2 | 3 | 4;
@@ -24,6 +33,14 @@ export interface IngestionState {
   summary: ExecutionSummary | null;
   error: string | null;
 
+  // chdman readiness and downloader state
+  chdmanStatus: ChdmanStatus | null;
+  isDownloadingChdman: boolean;
+  chdmanDownloadProgress: number;
+  chdmanDownloadedBytes: number;
+  chdmanTotalBytes: number;
+  chdmanError: string | null;
+
   // Actions
   setStep: (step: 1 | 2 | 3 | 4) => void;
   setInputDir: (dir: string) => void;
@@ -37,6 +54,9 @@ export interface IngestionState {
   startScan: () => Promise<void>;
   startExecution: () => Promise<void>;
   trashSourceFiles: () => Promise<number>;
+  checkChdmanStatus: (customPath?: string) => Promise<ChdmanStatus | null>;
+  downloadChdman: () => Promise<void>;
+  setCustomChdmanPath: (path: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -55,6 +75,12 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   activeLogs: [],
   summary: null,
   error: null,
+  chdmanStatus: null,
+  isDownloadingChdman: false,
+  chdmanDownloadProgress: 0,
+  chdmanDownloadedBytes: 0,
+  chdmanTotalBytes: 0,
+  chdmanError: null,
 
   setStep: (step) => set({ step }),
   setInputDir: (inputDir) => set({ inputDir }),
@@ -182,6 +208,63 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     }
   },
 
+  checkChdmanStatus: async (customPath?: string) => {
+    try {
+      const status = await checkChdmanStatusApi(customPath);
+      set({ chdmanStatus: status, chdmanError: null });
+      return status;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      set({ chdmanError: `chdman check failed: ${msg}` });
+      return null;
+    }
+  },
+
+  downloadChdman: async () => {
+    set({
+      isDownloadingChdman: true,
+      chdmanDownloadProgress: 0,
+      chdmanDownloadedBytes: 0,
+      chdmanTotalBytes: 0,
+      chdmanError: null,
+    });
+
+    const onProgress = (event: DownloadProgressEvent) => {
+      set({
+        chdmanDownloadProgress: event.percentage,
+        chdmanDownloadedBytes: event.downloaded_bytes,
+        chdmanTotalBytes: event.total_bytes,
+      });
+    };
+
+    try {
+      const status = await downloadChdmanApi(onProgress);
+      set({
+        chdmanStatus: status,
+        isDownloadingChdman: false,
+        chdmanDownloadProgress: 100,
+        chdmanError: null,
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      set({
+        chdmanError: `Download failed: ${msg}`,
+        isDownloadingChdman: false,
+      });
+    }
+  },
+
+  setCustomChdmanPath: async (path: string) => {
+    if (!path.trim()) return;
+    try {
+      const status = await setCustomChdmanPathApi(path.trim());
+      set({ chdmanStatus: status, chdmanError: null });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      set({ chdmanError: `Invalid chdman binary: ${msg}` });
+    }
+  },
+
   reset: () => {
     set({
       step: 1,
@@ -194,6 +277,11 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
       activeLogs: [],
       summary: null,
       error: null,
+      chdmanError: null,
+      isDownloadingChdman: false,
+      chdmanDownloadProgress: 0,
+      chdmanDownloadedBytes: 0,
+      chdmanTotalBytes: 0,
     });
   },
 }));

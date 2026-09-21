@@ -96,4 +96,33 @@ describe('useIngestionStore', () => {
     store.setAllGamesEnabled(true);
     expect(useIngestionStore.getState().plan?.games.every((g) => g.enabled)).toBe(true);
   });
+
+  it('checks chdman status and updates store state', async () => {
+    const store = useIngestionStore.getState();
+    const status = await store.checkChdmanStatus();
+
+    expect(status).toBeDefined();
+    expect(useIngestionStore.getState().chdmanStatus).toEqual(status);
+  });
+
+  it('downloads chdman with progress updates and marks ready', async () => {
+    const store = useIngestionStore.getState();
+    await store.downloadChdman();
+
+    const updated = useIngestionStore.getState();
+    expect(updated.isDownloadingChdman).toBe(false);
+    expect(updated.chdmanDownloadProgress).toBe(100);
+    expect(updated.chdmanStatus?.ready).toBe(true);
+    expect(updated.chdmanStatus?.source).toBe('managed_directory');
+  });
+
+  it('sets custom chdman path and marks ready', async () => {
+    const store = useIngestionStore.getState();
+    await store.setCustomChdmanPath('D:/Custom/chdman.exe');
+
+    const updated = useIngestionStore.getState();
+    expect(updated.chdmanStatus?.ready).toBe(true);
+    expect(updated.chdmanStatus?.source).toBe('custom_path');
+    expect(updated.chdmanStatus?.path).toBe('D:/Custom/chdman.exe');
+  });
 });

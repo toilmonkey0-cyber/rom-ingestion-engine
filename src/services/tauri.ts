@@ -4,6 +4,8 @@ import {
   FrontendPreset,
   JobProgressEvent,
   GameStatusEvent,
+  ChdmanStatus,
+  DownloadProgressEvent,
 } from '../types/plan';
 
 export const isTauri = (): boolean => {
@@ -183,4 +185,102 @@ export async function trashSourceFilesApi(sourceFiles: string[]): Promise<number
 
   await new Promise((r) => setTimeout(r, 400));
   return sourceFiles.length;
+}
+
+let simulatedChdmanStatus: ChdmanStatus = {
+  ready: false,
+  source: 'missing',
+  path: null,
+  version: null,
+};
+
+export function _resetSimulatedChdmanStatus(status?: ChdmanStatus) {
+  simulatedChdmanStatus = status || {
+    ready: false,
+    source: 'missing',
+    path: null,
+    version: null,
+  };
+}
+
+export async function checkChdmanStatusApi(customPath?: string): Promise<ChdmanStatus> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<ChdmanStatus>('check_chdman_status', {
+      customPath: customPath?.trim() ? customPath.trim() : null,
+    });
+  }
+
+  // Browser simulation fallback
+  await new Promise((r) => setTimeout(r, 80));
+  if (customPath && customPath.trim()) {
+    simulatedChdmanStatus = {
+      ready: true,
+      source: 'custom_path',
+      path: customPath.trim(),
+      version: '0.268',
+    };
+  }
+  return { ...simulatedChdmanStatus };
+}
+
+export async function downloadChdmanApi(
+  onProgress?: (event: DownloadProgressEvent) => void
+): Promise<ChdmanStatus> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+
+    let unlisten: (() => void) | undefined;
+    if (onProgress) {
+      unlisten = await listen<DownloadProgressEvent>('chdman-download-progress', (e) => {
+        onProgress(e.payload);
+      });
+    }
+
+    try {
+      return await invoke<ChdmanStatus>('download_chdman');
+    } finally {
+      if (unlisten) unlisten();
+    }
+  }
+
+  // Browser simulation fallback with progressive byte increments
+  const totalBytes = 15728640; // ~15 MB
+  const milestones = [15, 35, 60, 85, 100];
+  for (const p of milestones) {
+    await new Promise((r) => setTimeout(r, 60));
+    if (onProgress) {
+      onProgress({
+        downloaded_bytes: Math.round(totalBytes * (p / 100)),
+        total_bytes: totalBytes,
+        percentage: p,
+      });
+    }
+  }
+
+  simulatedChdmanStatus = {
+    ready: true,
+    source: 'managed_directory',
+    path: 'C:/Tools/managed/chdman.exe',
+    version: '0.268',
+  };
+  return { ...simulatedChdmanStatus };
+}
+
+export async function setCustomChdmanPathApi(path: string): Promise<ChdmanStatus> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<ChdmanStatus>('set_custom_chdman_path', { path });
+  }
+
+  // Browser simulation fallback
+  await new Promise((r) => setTimeout(r, 50));
+  simulatedChdmanStatus = {
+    ready: true,
+    source: 'custom_path',
+    path,
+    version: '0.268',
+  };
+  return { ...simulatedChdmanStatus };
 }

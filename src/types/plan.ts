@@ -59,3 +59,18 @@ export interface ExecutionSummary {
   total_source_bytes: number;
   total_output_bytes: number;
 }
+
+export type ChdmanSource = 'system_path' | 'managed_directory' | 'custom_path' | 'missing';
+
+export interface ChdmanStatus {
+  ready: boolean;
+  source: ChdmanSource;
+  path: string | null;
+  version: string | null;
+}
+
+export interface DownloadProgressEvent {
+  downloaded_bytes: number;
+  total_bytes: number;
+  percentage: number;
+}

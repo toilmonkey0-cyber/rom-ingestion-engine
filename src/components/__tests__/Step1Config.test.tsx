@@ -36,4 +36,12 @@ describe('Step1Config', () => {
 
     expect(useIngestionStore.getState().preset).toBe('onionos');
   });
+
+  it('renders chdman readiness banner in Step 1', async () => {
+    render(<Step1Config />);
+
+    // Should display chdman banner in missing state by default
+    expect(await screen.findByText(/chdman Required/i)).toBeDefined();
+    expect(screen.getByText(/Install chdman \(1-Click\)/i)).toBeDefined();
+  });
 });
