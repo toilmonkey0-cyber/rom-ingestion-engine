@@ -21,6 +21,7 @@ async fn test_scan_and_plan_invalid_directory() {
         FrontendPreset::EsDe,
         None,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -49,6 +50,7 @@ async fn test_scan_and_plan_success_with_fallback() {
         psx_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::EsDe,
+        None,
         None,
         None,
     )
@@ -431,4 +433,135 @@ async fn test_set_custom_chdman_path_valid_and_invalid() {
     // Invalid path should error
     let err_result = set_custom_chdman_path("C:/fake_path_does_not_exist/chdman.exe".to_string()).await;
     assert!(err_result.is_err());
+}
+
+#[tokio::test]
+async fn test_execute_plan_chdman_verify_gate_blocks_success() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("vin");
+    let out_dir = dir.path().join("vout");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // The fallback title keeps the "verify_fail" marker in the target CHD
+    // filename, which the mock chdman uses to fail `verify`.
+    let cue = in_dir.join("Klonoa verify_fail (USA).cue");
+    let bin = in_dir.join("Klonoa verify_fail (USA).bin");
+    File::create(&bin).unwrap().write_all(b"klonoa data").unwrap();
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"Klonoa verify_fail (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("scan_and_plan");
+    assert_eq!(plan.games.len(), 1);
+
+    let target_chd = plan.games[0].discs[0].target_chd_path.clone();
+
+    let emitter = MockEventSink::new();
+    let runner = ChdmanRunner::new(Some(get_mock_chdman_path()));
+    let summary = execute_plan_internal(&emitter, plan, Some(runner), Some(2))
+        .await
+        .expect("execute_plan_internal completes");
+
+    // Conversion succeeded but verification failed: the game must be counted
+    // as failed, no source files may be eligible for trash, and the suspect
+    // CHD must have been removed.
+    assert_eq!(summary.successful_games, 0);
+    assert_eq!(summary.failed_games, 1);
+    assert!(summary.source_files_to_trash.is_empty());
+    assert!(!target_chd.exists(), "failed-verification CHD must be deleted");
+
+    let statuses = emitter.status_events.lock().unwrap().clone();
+    assert!(statuses.iter().any(|e| e.status == TaskStatus::Failed
+        && e.error.as_deref().unwrap_or("").contains("CHD verification failed")));
+}
+
+#[tokio::test]
+async fn test_runner_verify_success_and_failure() {
+    let runner = ChdmanRunner::new(Some(get_mock_chdman_path()));
+
+    // Valid CHD (magic bytes) verifies cleanly.
+    let dir = tempdir().unwrap();
+    let good = dir.path().join("good.chd");
+    File::create(&good).unwrap().write_all(b"MComprHD\x00\x00restofthefilepadding").unwrap();
+    runner.verify(&good).await.expect("valid chd verifies");
+
+    // Not a CHD at all.
+    let bad = dir.path().join("bad.chd");
+    File::create(&bad).unwrap().write_all(b"junkjunkjunk").unwrap();
+    assert!(runner.verify(&bad).await.is_err());
+
+    // Missing file.
+    assert!(runner.verify(dir.path().join("missing.chd")).await.is_err());
+}
+
+#[tokio::test]
+async fn test_scan_and_plan_with_redump_dat_verification() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("din");
+    let out_dir = dir.path().join("dout");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let bin = in_dir.join("RayEarth (USA).bin");
+    let content = b"rayearth track one payload";
+    File::create(&bin).unwrap().write_all(content).unwrap();
+    let cue = in_dir.join("RayEarth (USA).cue");
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"RayEarth (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    // SHA-1 of the full track content (computed with the scanner's own
+    // full-file hasher), embedded in a Redump-style DAT.
+    let sha1 = rom_ingest_core::scanner::calculate_track1_sha1(&bin).expect("hash track");
+    let dat = format!(
+        r#"<datafile><header><name>Redump.org - Sony - Playstation</name></header>
+        <game name="RayEarth (USA)"><rom name="track.bin" size="{}" sha1="{}"/></game></datafile>"#,
+        content.len(),
+        sha1
+    );
+    let dat_path = dir.path().join("PSX.dat");
+    File::create(&dat_path).unwrap().write_all(dat.as_bytes()).unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        Some(vec![dat_path.to_string_lossy().to_string()]),
+    )
+    .await
+    .expect("scan with DAT");
+
+    assert_eq!(plan.games.len(), 1);
+    let game = &plan.games[0];
+    assert_eq!(game.canonical_title, "RayEarth");
+    assert_eq!(game.source, ClassificationSource::RedumpCache);
+    assert_eq!(game.confidence, 1.0);
+    assert!(!game.needs_review);
+
+    // A bogus DAT path must fail loudly instead of silently skipping.
+    let err = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        Some(vec![dir.path().join("nope.dat").to_string_lossy().to_string()]),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("Cannot open Redump DAT"), "got: {}", err);
 }

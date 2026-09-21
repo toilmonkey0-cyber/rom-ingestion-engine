@@ -259,3 +259,63 @@ fn test_clean_canonical_title_and_tags() {
     assert_eq!(extract_region("Game (Japan, En)"), Some("Japan".to_string()));
     assert_eq!(extract_region("Game"), None);
 }
+
+#[test]
+fn test_redump_load_dat_xml() {
+    // sha1("track one data") = 0f48a8b40ad0afa2fc2c9d8f659e3f5b1b0e2d3c (fixture value)
+    let dat = r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Redump.org - Sony - Playstation</name>
+    <description>Redump.org - Sony - Playstation</description>
+  </header>
+  <game name="Klonoa (USA)">
+    <category>Games</category>
+    <rom name="Klonoa (USA) (Track 1).bin" size="100" crc="00000000" md5="00000000000000000000000000000000" sha1="0f48a8b40ad0afa2fc2c9d8f659e3f5b1b0e2d3c"/>
+    <rom name="Klonoa (USA) (Track 2).bin" size="50" crc="00000000" md5="00000000000000000000000000000000" sha1="1111111111111111111111111111111111111111"/>
+  </game>
+  <game name="Panzer Dragoon Saga (USA) (Disc 1)">
+    <rom name="track01.bin" size="10" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/>
+    <rom name="track02.bin" size="10" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
+  </game>
+  <game name="Broken Entry (Europe)">
+    <rom name="track01.bin" size="10" sha1="not-a-valid-hash"/>
+  </game>
+</datafile>
+"#;
+
+    let mut db = RedumpDatabase::new();
+    let count = db.load_dat_xml(dat.as_bytes()).expect("parse DAT");
+    // Two valid entries (first rom of each game); the invalid hash is skipped.
+    assert_eq!(count, 2);
+    assert_eq!(db.len(), 2);
+
+    // Platform comes from the DAT header via loose keyword inference.
+    let klonoa = db.lookup_sha1("0F48A8B40AD0AFA2FC2C9D8F659E3F5B1B0E2D3C").expect("case-insensitive lookup");
+    assert_eq!(klonoa.platform, Platform::Psx);
+    assert_eq!(klonoa.canonical_title, "Klonoa");
+    assert_eq!(klonoa.region, "USA");
+    assert!(!klonoa.is_multidisc);
+    assert_eq!(klonoa.source, ClassificationSource::RedumpCache);
+
+    // Only the FIRST rom of a game is indexed (track-1 semantics).
+    assert!(!db.contains_sha1("1111111111111111111111111111111111111111"));
+    assert!(!db.contains_sha1("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+    // Disc metadata parsed from the game name; second game platform inherits header.
+    let pds = db.get_entry("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("second entry");
+    assert_eq!(pds.platform, Platform::Psx);
+    assert_eq!(pds.disc_number, Some(1));
+    assert!(pds.is_multidisc);
+}
+
+#[test]
+fn test_parse_platform_loose_from_dat_headers() {
+    use rom_ingest_core::classifier::redump::parse_platform_loose;
+    assert_eq!(parse_platform_loose("Redump.org - Sony - Playstation"), Some(Platform::Psx));
+    assert_eq!(parse_platform_loose("Sega - Saturn"), Some(Platform::Saturn));
+    assert_eq!(parse_platform_loose("Sega - Mega CD - Sega CD"), Some(Platform::SegaCd));
+    assert_eq!(parse_platform_loose("NEC - PC Engine CD - TurboGrafx-CD"), Some(Platform::PceCd));
+    assert_eq!(parse_platform_loose("Sega Dreamcast"), Some(Platform::Dreamcast));
+    assert_eq!(parse_platform_loose("Nintendo - Game Boy"), None);
+}

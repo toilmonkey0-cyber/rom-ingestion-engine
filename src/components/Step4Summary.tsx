@@ -11,6 +11,8 @@ import {
   Layers,
   X,
   Sparkles,
+  Image as ImageIcon,
+  Palette,
 } from 'lucide-react';
 import { useIngestionStore } from '../store/useIngestionStore';
 
@@ -29,6 +31,10 @@ export const Step4Summary: React.FC = () => {
   const trashSourceFiles = useIngestionStore((s) => s.trashSourceFiles);
   const reset = useIngestionStore((s) => s.reset);
   const error = useIngestionStore((s) => s.error);
+  const isFinishing = useIngestionStore((s) => s.isFinishing);
+  const finishProgress = useIngestionStore((s) => s.finishProgress);
+  const finishResult = useIngestionStore((s) => s.finishResult);
+  const finishLibrary = useIngestionStore((s) => s.finishLibrary);
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [trashError, setTrashError] = useState<string | null>(null);
@@ -247,6 +253,86 @@ export const Step4Summary: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Finish Line: Box Art & Playlist Metadata */}
+      {successfulGames > 0 && (
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center space-x-2">
+                <Palette className="w-5 h-5 text-purple-400" />
+                <h3 className="text-base font-semibold text-white">
+                  Finish Line: Box Art &amp; Playlist Metadata
+                </h3>
+              </div>
+              <p className="text-xs text-slate-400 mt-1 max-w-xl">
+                Downloads box art from the libretro thumbnail service (no account needed) and writes{' '}
+                <code className="text-purple-300 bg-slate-800/60 px-1 py-0.5 rounded">gamelist.xml</code> metadata
+                for ES-DE / Batocera. Other frontends get artwork placed next to each playlist for auto-loading.
+                Your card looks finished the moment it boots.
+              </p>
+            </div>
+
+            <div className="shrink-0">
+              {finishResult ? (
+                <div className="px-4 py-2 rounded-xl bg-purple-950/60 border border-purple-800/80 text-purple-300 text-xs font-semibold flex items-center space-x-2">
+                  <CheckCircle2 className="w-4 h-4 text-purple-400" />
+                  <span>
+                    {finishResult.artwork_downloaded} art downloaded · {finishResult.gamelists_written} gamelist
+                    {finishResult.gamelists_written === 1 ? '' : 's'} written
+                    {finishResult.artwork_failed > 0
+                      ? ` · ${finishResult.artwork_failed} not found (skipped)`
+                      : ''}
+                  </span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => finishLibrary(true)}
+                  disabled={isFinishing}
+                  className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center space-x-2 transition-all shadow-md ${
+                    isFinishing
+                      ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                      : 'bg-purple-500/20 text-purple-300 border border-purple-500/40 hover:bg-purple-500/30'
+                  }`}
+                >
+                  {isFinishing ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-purple-400 border-t-transparent rounded-full animate-spin" />
+                      <span>
+                        {finishProgress
+                          ? `Fetching artwork ${finishProgress.completed}/${finishProgress.total}…`
+                          : 'Preparing…'}
+                      </span>
+                    </>
+                  ) : (
+                    <>
+                      <ImageIcon className="w-4 h-4 text-purple-400" />
+                      <span>Download Box Art &amp; Generate Metadata</span>
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {isFinishing && finishProgress && (
+            <div className="space-y-1.5">
+              <div className="w-full bg-slate-950 rounded-full h-1.5 overflow-hidden">
+                <div
+                  className="bg-gradient-to-r from-purple-500 to-fuchsia-500 h-full rounded-full transition-all duration-300"
+                  style={{
+                    width: `${finishProgress.total > 0 ? (finishProgress.completed / finishProgress.total) * 100 : 0}%`,
+                  }}
+                />
+              </div>
+              <p className="text-[11px] text-slate-500 font-mono truncate">
+                {finishProgress.title}…
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Action Footer */}
       <div className="flex justify-end space-x-4 pt-4 border-t border-slate-800">

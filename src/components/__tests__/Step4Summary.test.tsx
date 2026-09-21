@@ -93,6 +93,22 @@ describe('Step4Summary', () => {
     expect(screen.getByText(/Move Source Dumps to Recycle Bin\?/i)).toBeDefined();
   });
 
+  it('renders the Finish Line card and triggers artwork download', async () => {
+    const finishSpy = vi.fn().mockResolvedValue({
+      gamelists_written: 1,
+      artwork_downloaded: 3,
+      artwork_skipped: 0,
+      artwork_failed: 1,
+    });
+    useIngestionStore.setState({ finishLibrary: finishSpy });
+
+    render(<Step4Summary />);
+
+    const btn = screen.getByRole('button', { name: /Download Box Art & Generate Metadata/i });
+    fireEvent.click(btn);
+    expect(finishSpy).toHaveBeenCalledWith(true);
+  });
+
   it('opens confirmation modal and handles trash action', async () => {
     const trashSpy = vi.fn().mockResolvedValue(4);
     useIngestionStore.setState({ trashSourceFiles: trashSpy });

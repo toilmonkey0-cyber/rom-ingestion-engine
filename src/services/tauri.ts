@@ -7,6 +7,8 @@ import {
   ChdmanStatus,
   DownloadProgressEvent,
   CustomPresetConfig,
+  FinishLibrarySummary,
+  ArtworkProgressEvent,
 } from '../types/plan';
 
 export const DEFAULT_CUSTOM_PRESET: CustomPresetConfig = {
@@ -31,7 +33,8 @@ export async function scanAndPlanApi(
   outputDir: string,
   preset: FrontendPreset,
   apiKey?: string,
-  customConfig?: CustomPresetConfig | null
+  customConfig?: CustomPresetConfig | null,
+  redumpDatPaths?: string[] | null
 ): Promise<IngestionPlan> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -41,6 +44,10 @@ export async function scanAndPlanApi(
       preset,
       apiKey: apiKey?.trim() ? apiKey.trim() : null,
       customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+      redumpDatPaths:
+        redumpDatPaths && redumpDatPaths.length > 0
+          ? redumpDatPaths.map((p) => p.trim()).filter(Boolean)
+          : null,
     });
   }
 
@@ -309,4 +316,49 @@ export async function setCustomChdmanPathApi(path: string): Promise<ChdmanStatus
     version: '0.268',
   };
   return { ...simulatedChdmanStatus };
+}
+
+export async function finishLibraryApi(
+  plan: IngestionPlan,
+  downloadArtwork: boolean,
+  onProgress?: (event: ArtworkProgressEvent) => void
+): Promise<FinishLibrarySummary> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+
+    let unlisten: (() => void) | undefined;
+    if (onProgress) {
+      unlisten = await listen<ArtworkProgressEvent>('artwork-progress', (e) => {
+        onProgress(e.payload);
+      });
+    }
+
+    try {
+      return await invoke<FinishLibrarySummary>('finish_library', { plan, downloadArtwork });
+    } finally {
+      if (unlisten) unlisten();
+    }
+  }
+
+  // Browser simulation: fake staggered progress then a summary.
+  const games = plan.games.filter((g) => g.enabled);
+  for (let i = 0; i < games.length; i++) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (onProgress) {
+      onProgress({
+        game_id: games[i].id,
+        title: games[i].canonical_title,
+        status: i === games.length - 1 ? 'failed' : 'done',
+        completed: i + 1,
+        total: games.length,
+      });
+    }
+  }
+  return {
+    gamelists_written: plan.preset === 'esde' || plan.preset === 'batocera' ? 1 : 0,
+    artwork_downloaded: Math.max(games.length - 1, 0),
+    artwork_skipped: 0,
+    artwork_failed: games.length > 0 ? 1 : 0,
+  };
 }

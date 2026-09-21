@@ -8,6 +8,8 @@ import {
   ChdmanStatus,
   DownloadProgressEvent,
   CustomPresetConfig,
+  FinishLibrarySummary,
+  ArtworkProgressEvent,
 } from '../types/plan';
 import {
   scanAndPlanApi,
@@ -16,6 +18,7 @@ import {
   checkChdmanStatusApi,
   downloadChdmanApi,
   setCustomChdmanPathApi,
+  finishLibraryApi,
   DEFAULT_CUSTOM_PRESET,
 } from '../services/tauri';
 
@@ -26,6 +29,8 @@ export interface IngestionState {
   preset: FrontendPreset;
   customPresetConfig: CustomPresetConfig;
   apiKey: string;
+  /** Comma/newline-separated Redump .dat paths for scan-time verification. */
+  redumpDats: string;
   plan: IngestionPlan | null;
   isScanning: boolean;
   isExecuting: boolean;
@@ -36,6 +41,11 @@ export interface IngestionState {
   activeLogs: string[];
   summary: ExecutionSummary | null;
   error: string | null;
+
+  // Finish Line (artwork + gamelist metadata)
+  isFinishing: boolean;
+  finishProgress: { completed: number; total: number; title: string } | null;
+  finishResult: FinishLibrarySummary | null;
 
   // chdman readiness and downloader state
   chdmanStatus: ChdmanStatus | null;
@@ -52,6 +62,7 @@ export interface IngestionState {
   setPreset: (preset: FrontendPreset) => void;
   setCustomPresetFolder: (field: keyof CustomPresetConfig, value: string) => void;
   setApiKey: (key: string) => void;
+  setRedumpDats: (dats: string) => void;
   setError: (error: string | null) => void;
   updateGameTitle: (gameId: string, newTitle: string) => void;
   toggleGameEnabled: (gameId: string) => void;
@@ -59,6 +70,7 @@ export interface IngestionState {
   startScan: () => Promise<void>;
   startExecution: () => Promise<void>;
   trashSourceFiles: () => Promise<number>;
+  finishLibrary: (downloadArtwork: boolean) => Promise<FinishLibrarySummary | null>;
   checkChdmanStatus: (customPath?: string) => Promise<ChdmanStatus | null>;
   downloadChdman: () => Promise<void>;
   setCustomChdmanPath: (path: string) => Promise<void>;
@@ -72,6 +84,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   preset: 'anbernicstock',
   customPresetConfig: { ...DEFAULT_CUSTOM_PRESET },
   apiKey: '',
+  redumpDats: '',
   plan: null,
   isScanning: false,
   isExecuting: false,
@@ -81,6 +94,9 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   activeLogs: [],
   summary: null,
   error: null,
+  isFinishing: false,
+  finishProgress: null,
+  finishResult: null,
   chdmanStatus: null,
   isDownloadingChdman: false,
   chdmanDownloadProgress: 0,
@@ -97,6 +113,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
       customPresetConfig: { ...state.customPresetConfig, [field]: value },
     })),
   setApiKey: (apiKey) => set({ apiKey }),
+  setRedumpDats: (redumpDats) => set({ redumpDats }),
   setError: (error) => set({ error }),
 
   updateGameTitle: (gameId, newTitle) => {
@@ -125,7 +142,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   },
 
   startScan: async () => {
-    const { inputDir, outputDir, preset, apiKey, customPresetConfig } = get();
+    const { inputDir, outputDir, preset, apiKey, customPresetConfig, redumpDats } = get();
     if (!inputDir.trim()) {
       set({ error: 'Please specify an input folder with your disc dumps.' });
       return;
@@ -137,12 +154,17 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
 
     set({ isScanning: true, error: null });
     try {
+      const datPaths = redumpDats
+        .split(/[,;\n]/)
+        .map((p) => p.trim())
+        .filter(Boolean);
       const plan = await scanAndPlanApi(
         inputDir,
         outputDir,
         preset,
         apiKey,
-        preset === 'custom' ? customPresetConfig : null
+        preset === 'custom' ? customPresetConfig : null,
+        datPaths.length > 0 ? datPaths : null
       );
       set({ plan, step: 2, isScanning: false });
     } catch (err: unknown) {
@@ -234,6 +256,28 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     }
   },
 
+  finishLibrary: async (downloadArtwork: boolean) => {
+    const { plan, isFinishing } = get();
+    if (!plan || isFinishing) return null;
+
+    set({ isFinishing: true, error: null, finishResult: null, finishProgress: null });
+    const onProgress = (event: ArtworkProgressEvent) => {
+      set({
+        finishProgress: { completed: event.completed, total: event.total, title: event.title },
+      });
+    };
+
+    try {
+      const result = await finishLibraryApi(plan, downloadArtwork, onProgress);
+      set({ finishResult: result, isFinishing: false });
+      return result;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      set({ error: `Finish Line failed: ${msg}`, isFinishing: false });
+      return null;
+    }
+  },
+
   checkChdmanStatus: async (customPath?: string) => {
     try {
       const status = await checkChdmanStatusApi(customPath);
@@ -303,6 +347,9 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
       activeLogs: [],
       summary: null,
       error: null,
+      isFinishing: false,
+      finishProgress: null,
+      finishResult: null,
       chdmanError: null,
       isDownloadingChdman: false,
       chdmanDownloadProgress: 0,

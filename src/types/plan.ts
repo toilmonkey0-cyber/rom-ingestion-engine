@@ -92,3 +92,20 @@ export interface DownloadProgressEvent {
   total_bytes: number;
   percentage: number;
 }
+
+export type ArtworkStatus = 'downloading' | 'done' | 'skipped' | 'failed';
+
+export interface ArtworkProgressEvent {
+  game_id: string;
+  title: string;
+  status: ArtworkStatus;
+  completed: number;
+  total: number;
+}
+
+export interface FinishLibrarySummary {
+  gamelists_written: number;
+  artwork_downloaded: number;
+  artwork_skipped: number;
+  artwork_failed: number;
+}

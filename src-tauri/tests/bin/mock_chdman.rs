@@ -7,6 +7,35 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     let env_mode = env::var("MOCK_CHDMAN_MODE").unwrap_or_default();
 
+    // `chdman verify -i <path>`: exit 0 when the file exists and carries the
+    // CHD magic; exit 1 otherwise. MOCK_CHDMAN_VERIFY_FAIL or a path
+    // containing "verify_fail" forces a verification failure.
+    if args.len() > 1 && args[1] == "verify" {
+        let input = args
+            .iter()
+            .position(|a| a == "-i")
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+            .unwrap_or_default();
+        let force_fail = env::var("MOCK_CHDMAN_VERIFY_FAIL").is_ok() || input.contains("verify_fail");
+
+        if force_fail {
+            eprintln!("Error: CHD verification failed (mock)");
+            std::process::exit(1);
+        }
+
+        let mut magic = [0u8; 8];
+        let readable = std::fs::File::open(&input)
+            .and_then(|mut f| std::io::Read::read_exact(&mut f, &mut magic))
+            .is_ok();
+        if readable && &magic == b"MComprHD" {
+            println!("chdman - verify (mock): OK");
+            std::process::exit(0);
+        }
+        eprintln!("Error: raw CHD header read failure or bad magic");
+        std::process::exit(1);
+    }
+
     // Arguments expected from ChdmanRunner:
     // createcd -i <input> -o <part_path> -f
     let mut input_path = String::new();

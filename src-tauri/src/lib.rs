@@ -2,6 +2,7 @@
 pub mod chdman;
 pub mod classifier;
 pub mod commands;
+pub mod metadata;
 pub mod models;
 pub mod organizer;
 pub mod plan_builder;
@@ -23,6 +24,7 @@ pub fn run() {
             commands::check_chdman_status,
             commands::download_chdman,
             commands::set_custom_chdman_path,
+            commands::finish_library,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

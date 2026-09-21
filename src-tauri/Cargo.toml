@@ -22,6 +22,7 @@ sha2 = "0.10"
 zip = { version = "2.2", default-features = false, features = ["deflate"] }
 flate2 = "1.0"
 tar = "0.4"
+quick-xml = "0.36"
 
 [dev-dependencies]
 tempfile = "3"

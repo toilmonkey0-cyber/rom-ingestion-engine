@@ -134,3 +134,32 @@ pub struct ExecutionSummary {
     pub total_source_bytes: u64,
     pub total_output_bytes: u64,
 }
+
+/// Status of one game's artwork lookup during the Finish Line phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtworkStatus {
+    Downloading,
+    Done,
+    Skipped,
+    Failed,
+}
+
+/// Emitted per game while box art is being fetched and written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArtworkProgressEvent {
+    pub game_id: String,
+    pub title: String,
+    pub status: ArtworkStatus,
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// Outcome of the Finish Line phase (artwork + playlist metadata).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishLibrarySummary {
+    pub gamelists_written: usize,
+    pub artwork_downloaded: usize,
+    pub artwork_skipped: usize,
+    pub artwork_failed: usize,
+}

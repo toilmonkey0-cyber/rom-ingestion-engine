@@ -211,6 +211,134 @@ impl RedumpDatabase {
         self.load_csv_or_tsv(reader)
     }
 
+    /// Loads entries from a Redump-style XML DAT file (`*.dat`).
+    ///
+    /// The platform for every entry is inferred from the DAT header
+    /// (`<name>`/`<description>`, e.g. "Sony Playstation"); each `<game>`
+    /// contributes its **first** `<rom>`'s SHA-1 (Redump lists tracks in
+    /// order, so the first rom is track 1) together with the game name, from
+    /// which region/disc metadata is extracted. Invalid or missing hashes are
+    /// skipped (and not counted).
+    pub fn load_dat_xml<R: Read>(&mut self, reader: R) -> Result<usize, quick_xml::Error> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+
+        let mut buf_reader = std::io::BufReader::new(reader);
+        let mut xml = Reader::from_reader(buf_reader.by_ref());
+
+        let mut buf = Vec::new();
+        let mut platform = Platform::Unknown;
+        let mut in_header = false;
+
+        let mut current_game: Option<String> = None;
+        let mut took_first_rom = false;
+        let mut count = 0;
+
+        loop {
+            match xml.read_event_into(&mut buf)? {
+                Event::Eof => break,
+                Event::Start(e) => match e.name().as_ref() {
+                    b"header" => in_header = true,
+                    b"game" => {
+                        current_game = e
+                            .attributes()
+                            .filter_map(|a| a.ok())
+                            .find(|a| a.key.as_ref() == b"name")
+                            .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()));
+                        took_first_rom = false;
+                    }
+                    b"rom" => {
+                        // Only the first rom of a game (track 1) is indexed.
+                        if let (Some(game_name), false) = (&current_game, took_first_rom) {
+                            if let Some(sha1) = e
+                                .attributes()
+                                .filter_map(|a| a.ok())
+                                .find(|a| a.key.as_ref() == b"sha1")
+                                .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+                            {
+                                let (disc_number, total_discs) = extract_disc_info(game_name);
+                                let region = extract_region(game_name)
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let title = clean_canonical_title(game_name);
+                                let is_multidisc = disc_number
+                                    .map(|d| d > 0 && total_discs.map(|t| t > 1).unwrap_or(true))
+                                    .unwrap_or(false);
+                                if self.insert(
+                                    &sha1,
+                                    &title,
+                                    platform,
+                                    &region,
+                                    is_multidisc,
+                                    disc_number,
+                                    total_discs,
+                                ) {
+                                    count += 1;
+                                }
+                            }
+                            took_first_rom = true;
+                        }
+                    }
+                    _ => {}
+                },
+                Event::Empty(e) => {
+                    // <rom .../> self-closing form (used by some DAT writers)
+                    if e.name().as_ref() == b"rom" {
+                        if let (Some(game_name), false) = (&current_game, took_first_rom) {
+                            if let Some(sha1) = e
+                                .attributes()
+                                .filter_map(|a| a.ok())
+                                .find(|a| a.key.as_ref() == b"sha1")
+                                .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+                            {
+                                let (disc_number, total_discs) = extract_disc_info(game_name);
+                                let region = extract_region(game_name)
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                if self.insert(
+                                    &sha1,
+                                    &clean_canonical_title(game_name),
+                                    platform,
+                                    &region,
+                                    disc_number
+                                        .map(|d| d > 0 && total_discs.map(|t| t > 1).unwrap_or(true))
+                                        .unwrap_or(false),
+                                    disc_number,
+                                    total_discs,
+                                ) {
+                                    count += 1;
+                                }
+                            }
+                            took_first_rom = true;
+                        }
+                    }
+                }
+                Event::Text(t) => {
+                    if in_header {
+                        let text = t.unescape().unwrap_or_default().to_string();
+                        // The header name/description identifies the system
+                        // (e.g. "Redump.org - Sony - Playstation").
+                        if parse_platform(&text) != Platform::Unknown {
+                            platform = parse_platform(&text);
+                        } else if let Some(p) = parse_platform_loose(&text) {
+                            platform = p;
+                        }
+                    }
+                }
+                Event::End(e) => match e.name().as_ref() {
+                    b"header" => in_header = false,
+                    b"game" => {
+                        current_game = None;
+                        took_first_rom = false;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(count)
+    }
+
     fn process_row(&mut self, fields: &[String], headers: Option<&[String]>) -> bool {
         let (sha1_idx, title_idx, platform_idx, region_idx, multidisc_idx, disc_idx, total_discs_idx) = match headers {
             Some(cols) => {
@@ -661,6 +789,32 @@ fn parse_bool(s: &str) -> Option<bool> {
         "false" | "0" | "no" | "n" | "f" => Some(false),
         _ => None,
     }
+}
+
+/// Infers a platform from free-form text such as a Redump DAT header
+/// ("Redump.org - Sony - Playstation") via keyword containment.
+pub fn parse_platform_loose(text: &str) -> Option<Platform> {
+    let alphanumeric: String = text
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    if alphanumeric.contains("dreamcast") {
+        return Some(Platform::Dreamcast);
+    }
+    if alphanumeric.contains("saturn") {
+        return Some(Platform::Saturn);
+    }
+    if alphanumeric.contains("playstation") || alphanumeric.contains(" psx ") || alphanumeric == "psx" {
+        return Some(Platform::Psx);
+    }
+    if alphanumeric.contains("mega cd") || alphanumeric.contains("megacd") || alphanumeric.contains("sega cd") || alphanumeric.contains("segacd") {
+        return Some(Platform::SegaCd);
+    }
+    if alphanumeric.contains("pc engine") || alphanumeric.contains("pcengine") || alphanumeric.contains("turbografx") {
+        return Some(Platform::PceCd);
+    }
+    None
 }
 
 /// Tokenizes a delimited line, handling double-quoted strings and escaped quotes.

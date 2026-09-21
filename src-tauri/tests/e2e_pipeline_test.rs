@@ -82,6 +82,7 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
         FrontendPreset::AnbernicStock,
         None,
         None,
+        None,
     )
     .await
     .expect("scan_and_plan should succeed");
@@ -244,6 +245,7 @@ async fn test_e2e_pipeline_multiplatform_mixed_presets() {
         FrontendPreset::OnionOs,
         None,
         None,
+        None,
     )
     .await
     .expect("mixed scan_and_plan");
@@ -403,6 +405,7 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
         roms_in.to_string_lossy().to_string(),
         roms_out.to_string_lossy().to_string(),
         FrontendPreset::Batocera,
+        None,
         None,
         None,
     )

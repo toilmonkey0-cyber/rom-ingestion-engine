@@ -11,8 +11,9 @@ use crate::chdman::runner::ChdmanRunner;
 use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
-    ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset, GameClassification,
-    GameStatusEvent, IngestionPlan, JobProgressEvent, SkippedSource, TaskStatus,
+    ArtworkProgressEvent, ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset,
+    GameClassification, GameStatusEvent, IngestionPlan, JobProgressEvent, SkippedSource,
+    TaskStatus,
 };
 use crate::organizer::presets::CustomPresetConfig;
 use crate::plan_builder::build_ingestion_plan;
@@ -23,6 +24,7 @@ pub trait EventSink: Send + Sync {
     fn emit_job_progress(&self, _event: &JobProgressEvent) {}
     fn emit_game_status(&self, _event: &GameStatusEvent) {}
     fn emit_download_progress(&self, _event: &DownloadProgressEvent) {}
+    fn emit_artwork_progress(&self, _event: &ArtworkProgressEvent) {}
 }
 
 impl EventSink for () {}
@@ -39,6 +41,10 @@ impl EventSink for tauri::AppHandle {
     fn emit_download_progress(&self, event: &DownloadProgressEvent) {
         let _ = self.emit("chdman-download-progress", event);
     }
+
+    fn emit_artwork_progress(&self, event: &ArtworkProgressEvent) {
+        let _ = self.emit("artwork-progress", event);
+    }
 }
 
 /// Mock event sink for testing and headless verification.
@@ -47,6 +53,7 @@ pub struct MockEventSink {
     pub progress_events: Arc<Mutex<Vec<JobProgressEvent>>>,
     pub status_events: Arc<Mutex<Vec<GameStatusEvent>>>,
     pub download_events: Arc<Mutex<Vec<DownloadProgressEvent>>>,
+    pub artwork_events: Arc<Mutex<Vec<ArtworkProgressEvent>>>,
 }
 
 impl MockEventSink {
@@ -70,6 +77,12 @@ impl EventSink for MockEventSink {
 
     fn emit_download_progress(&self, event: &DownloadProgressEvent) {
         if let Ok(mut lock) = self.download_events.lock() {
+            lock.push(event.clone());
+        }
+    }
+
+    fn emit_artwork_progress(&self, event: &ArtworkProgressEvent) {
+        if let Ok(mut lock) = self.artwork_events.lock() {
             lock.push(event.clone());
         }
     }
@@ -121,6 +134,10 @@ fn classify_fallback(disc: &DiscFingerprint) -> GameClassification {
 
 /// Scans a source directory, classifies discovered disc images via Redump and TypeSafe Jev,
 /// and returns a structured dry-run `IngestionPlan`.
+///
+/// `redump_dat_paths` optionally points at Redump XML DAT files; every entry
+/// whose track-1 SHA-1 matches a DAT hash is classified as `RedumpCache`,
+/// i.e. byte-verified against the reference dump.
 #[tauri::command]
 pub async fn scan_and_plan(
     input_dir: String,
@@ -128,6 +145,7 @@ pub async fn scan_and_plan(
     preset: FrontendPreset,
     api_key: Option<String>,
     custom_config: Option<CustomPresetConfig>,
+    redump_dat_paths: Option<Vec<String>>,
 ) -> Result<IngestionPlan, String> {
     let in_path = PathBuf::from(&input_dir);
     let out_path = PathBuf::from(&output_dir);
@@ -167,7 +185,22 @@ pub async fn scan_and_plan(
         .collect();
     let fingerprints = scan.fingerprints;
 
-    let redump_db = RedumpDatabase::with_builtin_data();
+    let mut redump_db = RedumpDatabase::with_builtin_data();
+    if let Some(paths) = redump_dat_paths.as_ref() {
+        for dat_path in paths {
+            let file = std::fs::File::open(dat_path)
+                .map_err(|e| format!("Cannot open Redump DAT '{}': {}", dat_path, e))?;
+            let loaded = redump_db
+                .load_dat_xml(file)
+                .map_err(|e| format!("Failed to parse Redump DAT '{}': {}", dat_path, e))?;
+            if loaded == 0 {
+                return Err(format!(
+                    "Redump DAT '{}' contained no valid entries (is it a Redump .dat file?)",
+                    dat_path
+                ));
+            }
+        }
+    }
     let jev_client = api_key
         .as_ref()
         .filter(|k| !k.trim().is_empty())
@@ -325,15 +358,38 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                 };
 
                 let res = runner.convert(&src, &target, on_prog).await;
-                drop(_permit);
 
                 match res {
                     Ok(()) => {
+                        // Post-conversion gate: run `chdman verify` on the
+                        // finished output. Only discs that pass are eligible
+                        // for source cleanup; a failed verification removes
+                        // the suspect CHD so it is never treated as good.
                         em.emit_job_progress(&JobProgressEvent {
                             game_id: game_id.clone(),
                             disc_number,
                             progress: 100.0,
-                            message: format!("Disc {} complete", disc_number),
+                            message: format!("Verifying disc {}...", disc_number),
+                        });
+
+                        if let Err(err) = runner.verify(&target).await {
+                            let _ = tokio::fs::remove_file(&target).await;
+                            return DiscConversionResult {
+                                disc_number,
+                                success: false,
+                                error: Some(format!("CHD verification failed: {}", err)),
+                                output_bytes: 0,
+                                source_files: Vec::new(),
+                                target_chd_path: target,
+                                relative_m3u_entry: None,
+                            };
+                        }
+
+                        em.emit_job_progress(&JobProgressEvent {
+                            game_id: game_id.clone(),
+                            disc_number,
+                            progress: 100.0,
+                            message: format!("Disc {} complete (verified)", disc_number),
                         });
 
                         let out_bytes = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
@@ -612,5 +668,17 @@ pub async fn set_custom_chdman_path(path: String) -> Result<ChdmanStatus, String
     }
     set_stored_custom_chdman_path(Some(path));
     Ok(status)
+}
+
+/// Finish Line: writes `gamelist.xml` metadata (ES-DE / Batocera) and
+/// downloads box art from the libretro thumbnail service for the converted
+/// library, emitting per-game `artwork-progress` events.
+#[tauri::command]
+pub async fn finish_library(
+    app_handle: tauri::AppHandle,
+    plan: IngestionPlan,
+    download_artwork: bool,
+) -> Result<crate::models::FinishLibrarySummary, String> {
+    crate::metadata::finish_library_internal(&app_handle, &plan, download_artwork, None).await
 }
 
