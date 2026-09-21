@@ -101,6 +101,8 @@ async fn test_execute_plan_single_disc_success() {
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        artwork_url: None,
+        target_media_paths: Vec::new(),
     };
 
     let plan = IngestionPlan {
@@ -200,6 +202,8 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        artwork_url: None,
+        target_media_paths: Vec::new(),
     };
 
     let plan = IngestionPlan {
@@ -255,6 +259,8 @@ async fn test_execute_plan_skipped_when_disabled() {
         source: ClassificationSource::Fallback,
         enabled: false,
         needs_review: true,
+        artwork_url: None,
+        target_media_paths: Vec::new(),
     };
 
     let plan = IngestionPlan {
@@ -306,6 +312,8 @@ async fn test_execute_plan_failure_handling() {
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        artwork_url: None,
+        target_media_paths: Vec::new(),
     };
 
     let plan = IngestionPlan {

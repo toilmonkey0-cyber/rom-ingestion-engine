@@ -22,6 +22,8 @@ fn test_models_json_roundtrip() {
         source: ClassificationSource::JevAI,
         enabled: true,
         needs_review: false,
+        artwork_url: Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII%20(USA).png".to_string()),
+        target_media_paths: vec![PathBuf::from("C:/Output/ROMS/PS/Imgs/Final Fantasy VII (USA).png")],
     };
 
     let plan = IngestionPlan {
@@ -136,4 +138,29 @@ fn test_disc_fingerprint_and_game_classification_roundtrip() {
     let deserialized_gc: GameClassification = serde_json::from_str(&serialized_gc).expect("deserialize classification");
     assert_eq!(deserialized_gc.canonical_title, classification.canonical_title);
     assert_eq!(deserialized_gc.confidence, classification.confidence);
+}
+
+#[test]
+fn test_media_type_and_options_serialization() {
+    let types = vec![
+        (MediaType::BoxArt, "\"boxart\""),
+        (MediaType::Screenshots, "\"screenshots\""),
+        (MediaType::TitleScreens, "\"titlescreens\""),
+    ];
+
+    for (variant, expected_json) in types {
+        let serialized = serde_json::to_string(&variant).expect("serialize media type");
+        assert_eq!(serialized, expected_json);
+        let deserialized: MediaType = serde_json::from_str(&serialized).expect("deserialize media type");
+        assert_eq!(deserialized, variant);
+    }
+
+    let default_options = MediaOptions::default();
+    assert!(default_options.download_boxart);
+    assert!(!default_options.download_screenshots);
+    assert!(!default_options.download_titles);
+
+    let serialized_opt = serde_json::to_string(&default_options).expect("serialize media options");
+    let deserialized_opt: MediaOptions = serde_json::from_str(&serialized_opt).expect("deserialize media options");
+    assert_eq!(deserialized_opt, default_options);
 }

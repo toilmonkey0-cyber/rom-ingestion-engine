@@ -213,6 +213,8 @@ pub fn build_ingestion_plan(
             source,
             enabled: true,
             needs_review,
+            artwork_url: None,
+            target_media_paths: Vec::new(),
         });
     }
 

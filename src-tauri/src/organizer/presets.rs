@@ -121,7 +121,7 @@ pub fn get_multidisc_subfolder(_preset: FrontendPreset) -> &'static str {
 
 /// Joins a base root path and a relative folder using forward slashes (`/`),
 /// normalizing separators cleanly for all operating systems.
-fn join_forward_slashes(root: &Path, folder: &str) -> String {
+pub fn join_forward_slashes(root: &Path, folder: &str) -> String {
     let s = root.to_string_lossy().replace('\\', "/");
     let trimmed = s.trim_end_matches('/');
     if trimmed.is_empty() {

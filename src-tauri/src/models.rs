@@ -69,6 +69,31 @@ pub struct PlannedDisc {
     pub status: TaskStatus,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MediaType {
+    BoxArt,
+    Screenshots,
+    TitleScreens,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaOptions {
+    pub download_boxart: bool,
+    pub download_screenshots: bool,
+    pub download_titles: bool,
+}
+
+impl Default for MediaOptions {
+    fn default() -> Self {
+        Self {
+            download_boxart: true,
+            download_screenshots: false,
+            download_titles: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlannedGame {
     pub id: String,
@@ -82,6 +107,8 @@ pub struct PlannedGame {
     pub source: ClassificationSource,
     pub enabled: bool,
     pub needs_review: bool,
+    pub artwork_url: Option<String>,
+    pub target_media_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
