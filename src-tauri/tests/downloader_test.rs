@@ -193,3 +193,109 @@ fn test_verify_and_install_download_success() {
     assert!(installed.exists());
     assert!(!tmp_file.exists()); // tmp file must be cleaned up on success!
 }
+
+#[test]
+fn test_detect_chdman_resolution_order() {
+    // 1. With non-existent custom path, falls through to managed/system or missing
+    let status = detect_chdman(Some("C:/non_existent/path/chdman.exe"));
+    // Since custom path doesn't exist, it should not report CustomPath
+    assert_ne!(status.source, ChdmanSource::CustomPath);
+
+    // 2. Missing case when nothing present
+    let status_missing = detect_chdman(None);
+    assert!(
+        status_missing.source == ChdmanSource::SystemPath
+            || status_missing.source == ChdmanSource::ManagedDirectory
+            || status_missing.source == ChdmanSource::Missing
+    );
+}
+
+#[test]
+fn test_detect_chdman_with_custom_executable() {
+    let mock_path = std::path::PathBuf::from(env!("CARGO_BIN_EXE_mock_chdman"));
+    let status = detect_chdman(Some(&mock_path.to_string_lossy()));
+    assert!(status.ready);
+    assert_eq!(status.source, ChdmanSource::CustomPath);
+    assert!(status.path.is_some());
+    assert_eq!(status.version.as_deref(), Some("0.268"));
+}
+
+#[tokio::test]
+async fn test_download_and_install_streaming_mock_server() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use rom_ingest_core::commands::MockEventSink;
+
+    // Create a local mock server
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let dir = tempdir().unwrap();
+    let zip_path = dir.path().join("payload.zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        zip.start_file("chdman-0.268/chdman.exe", options).unwrap();
+        zip.write_all(b"mock chdman binary 0.268").unwrap();
+        zip.finish().unwrap();
+    }
+
+    let payload = std::fs::read(&zip_path).unwrap();
+    let expected_sha256 = compute_file_sha256(&zip_path).unwrap();
+
+    let server_handle = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut buf = [0u8; 1024];
+        let _ = socket.read(&mut buf).await.unwrap();
+
+        let header = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+            payload.len()
+        );
+        socket.write_all(header.as_bytes()).await.unwrap();
+
+        // Stream in chunks
+        let mid = payload.len() / 2;
+        socket.write_all(&payload[..mid]).await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        socket.write_all(&payload[mid..]).await.unwrap();
+        socket.flush().await.unwrap();
+    });
+
+    let dest_dir = dir.path().join("installed_bin");
+    let sink = MockEventSink::new();
+
+    let manifest = PlatformManifest {
+        os: "windows",
+        arch: "x86_64",
+        download_url: "mock",
+        expected_sha256: Box::leak(expected_sha256.into_boxed_str()),
+        archive_format: ArchiveFormat::Zip,
+        format: ArchiveFormat::Zip,
+        binary_name: "chdman.exe",
+        version: "0.268",
+    };
+
+    let url = format!("http://127.0.0.1:{}/chdman.zip", port);
+    let status = download_and_install_from_url(
+        &url,
+        &manifest,
+        &dest_dir,
+        &sink,
+    )
+    .await
+    .unwrap();
+
+    server_handle.await.unwrap();
+
+    assert!(status.ready);
+    assert_eq!(status.source, ChdmanSource::ManagedDirectory);
+    assert!(dest_dir.join("chdman.exe").exists());
+    assert!(!dest_dir.join("chdman_download.tmp").exists());
+
+    let events = sink.download_events.lock().unwrap();
+    assert!(!events.is_empty());
+    assert_eq!(events.last().unwrap().percentage, 100.0);
+}

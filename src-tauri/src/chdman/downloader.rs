@@ -1,8 +1,12 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::commands::EventSink;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArchiveFormat {
@@ -29,6 +33,30 @@ impl PlatformManifest {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ChdmanStatus {
+    pub ready: bool,
+    pub source: ChdmanSource,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChdmanSource {
+    SystemPath,
+    ManagedDirectory,
+    CustomPath,
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DownloadProgressEvent {
+    pub downloaded_bytes: u64,
+    pub total_bytes: u64,
+    pub percentage: f32,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DownloadError {
     #[error("I/O error: {0}")]
@@ -50,6 +78,15 @@ pub enum DownloadError {
     UnsupportedPlatform {
         os: String,
         arch: String,
+    },
+
+    #[error("Network error: {0}")]
+    Network(#[from] reqwest::Error),
+
+    #[error("Server returned HTTP {status}: {message}")]
+    HttpError {
+        status: u16,
+        message: String,
     },
 }
 
@@ -320,3 +357,278 @@ pub fn verify_and_install_download(
     let _ = std::fs::remove_file(tmp_file);
     install_res
 }
+
+/// Parses chdman version string from process stdout/stderr.
+pub fn parse_version_string(text: &str) -> Option<String> {
+    static RE_VERSION: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?i)(?:manager|chdman|version)\s+v?([0-9]+(?:\.[0-9]+)+)").unwrap()
+    });
+    if let Some(caps) = RE_VERSION.captures(text) {
+        if let Some(m) = caps.get(1) {
+            return Some(m.as_str().to_string());
+        }
+    }
+    static RE_FALLBACK: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"\b([0-9]+\.[0-9]+(?:\.[0-9]+)*)\b").unwrap()
+    });
+    RE_FALLBACK.captures(text).and_then(|c| c.get(1)).map(|m| m.as_str().to_string())
+}
+
+/// Checks if a file exists and can be invoked as an executable binary.
+pub fn is_executable_binary<P: AsRef<Path>>(path: P) -> bool {
+    let p = path.as_ref();
+    if !p.is_file() {
+        return false;
+    }
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    match cmd.output() {
+        Ok(_) => true,
+        Err(_) => {
+            let mut fallback = std::process::Command::new(p);
+            fallback.arg("-help");
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                fallback.creation_flags(0x08000000);
+            }
+            fallback.output().is_ok()
+        }
+    }
+}
+
+/// Extracts version from an executable by invoking `--version` or `-help`.
+pub fn extract_version<P: AsRef<Path>>(path: P) -> Option<String> {
+    let p = path.as_ref();
+    let mut cmd = std::process::Command::new(p);
+    cmd.arg("--version");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    let output = cmd.output().or_else(|_| {
+        let mut fallback = std::process::Command::new(p);
+        fallback.arg("-help");
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            fallback.creation_flags(0x08000000);
+        }
+        fallback.output()
+    }).ok()?;
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    parse_version_string(&combined)
+}
+
+/// Detects chdman executable according to resolution order:
+/// 1. Custom path (if configured and valid)
+/// 2. Managed application local data directory (`<AppLocalData>/bin/`)
+/// 3. System `PATH`
+/// 4. Missing
+pub fn detect_chdman(custom_path: Option<&str>) -> ChdmanStatus {
+    // 1. Custom path priority
+    if let Some(cp) = custom_path.filter(|p| !p.trim().is_empty()) {
+        let p = PathBuf::from(cp);
+        if p.is_file() && is_executable_binary(&p) {
+            let version = extract_version(&p);
+            return ChdmanStatus {
+                ready: true,
+                source: ChdmanSource::CustomPath,
+                path: Some(p.to_string_lossy().to_string()),
+                version,
+            };
+        }
+    }
+
+    // 2. Managed directory priority: <AppLocalData>/bin/chdman[.exe]
+    let binary_name = if cfg!(windows) { "chdman.exe" } else { "chdman" };
+    if let Ok(managed_dir) = get_managed_tools_dir() {
+        let managed_binary = managed_dir.join(binary_name);
+        if managed_binary.is_file() && is_executable_binary(&managed_binary) {
+            let version = extract_version(&managed_binary);
+            return ChdmanStatus {
+                ready: true,
+                source: ChdmanSource::ManagedDirectory,
+                path: Some(managed_binary.to_string_lossy().to_string()),
+                version,
+            };
+        }
+    }
+
+    // 3. System PATH priority
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(binary_name);
+            if candidate.is_file() && is_executable_binary(&candidate) {
+                let version = extract_version(&candidate);
+                return ChdmanStatus {
+                    ready: true,
+                    source: ChdmanSource::SystemPath,
+                    path: Some(candidate.to_string_lossy().to_string()),
+                    version,
+                };
+            }
+            #[cfg(windows)]
+            {
+                let candidate_no_ext = dir.join("chdman");
+                if candidate_no_ext.is_file() && is_executable_binary(&candidate_no_ext) {
+                    let version = extract_version(&candidate_no_ext);
+                    return ChdmanStatus {
+                        ready: true,
+                        source: ChdmanSource::SystemPath,
+                        path: Some(candidate_no_ext.to_string_lossy().to_string()),
+                        version,
+                    };
+                }
+            }
+        }
+    }
+
+    // 4. Missing
+    ChdmanStatus {
+        ready: false,
+        source: ChdmanSource::Missing,
+        path: None,
+        version: None,
+    }
+}
+
+/// Streams platform-specific archive or binary from `url` into temporary file,
+/// emits download progress events through `event_sink`, validates SHA-256 integrity,
+/// extracts into `dest_dir`, and returns the detected status.
+pub async fn download_and_install_from_url<E: EventSink>(
+    url: &str,
+    manifest: &PlatformManifest,
+    dest_dir: &Path,
+    event_sink: &E,
+) -> Result<ChdmanStatus, DownloadError> {
+    std::fs::create_dir_all(dest_dir)?;
+    let tmp_file = dest_dir.join("chdman_download.tmp");
+    if tmp_file.exists() {
+        let _ = std::fs::remove_file(&tmp_file);
+    }
+
+    struct DownloadGuard {
+        path: PathBuf,
+        installed: bool,
+    }
+    impl Drop for DownloadGuard {
+        fn drop(&mut self) {
+            if !self.installed && self.path.exists() {
+                let _ = std::fs::remove_file(&self.path);
+            }
+        }
+    }
+
+    let mut guard = DownloadGuard {
+        path: tmp_file.clone(),
+        installed: false,
+    };
+
+    let client = reqwest::Client::builder()
+        .user_agent("rom-ingest-chdman-downloader/0.1.0")
+        .build()?;
+
+    let mut response = client.get(url).send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(DownloadError::HttpError {
+            status: status.as_u16(),
+            message: status.canonical_reason().unwrap_or("HTTP error").to_string(),
+        });
+    }
+
+    let total_bytes = response.content_length().unwrap_or(0);
+    let mut file = File::create(&tmp_file)?;
+    let mut downloaded_bytes: u64 = 0;
+
+    event_sink.emit_download_progress(&DownloadProgressEvent {
+        downloaded_bytes: 0,
+        total_bytes,
+        percentage: 0.0,
+    });
+
+    while let Some(chunk) = response.chunk().await? {
+        use std::io::Write;
+        file.write_all(&chunk)?;
+        downloaded_bytes += chunk.len() as u64;
+
+        let percentage = if total_bytes > 0 {
+            ((downloaded_bytes as f64 / total_bytes as f64) * 100.0) as f32
+        } else {
+            0.0
+        };
+
+        event_sink.emit_download_progress(&DownloadProgressEvent {
+            downloaded_bytes,
+            total_bytes,
+            percentage,
+        });
+    }
+
+    use std::io::Write;
+    file.flush()?;
+    drop(file);
+
+    event_sink.emit_download_progress(&DownloadProgressEvent {
+        downloaded_bytes,
+        total_bytes: if total_bytes > 0 { total_bytes } else { downloaded_bytes },
+        percentage: 100.0,
+    });
+
+    guard.installed = true;
+
+    let installed_path = verify_and_install_download(
+        &tmp_file,
+        manifest.expected_sha256,
+        manifest.archive_format,
+        dest_dir,
+        manifest.binary_name,
+    )?;
+
+    let detected_version = extract_version(&installed_path)
+        .or_else(|| Some(manifest.version.to_string()));
+
+    Ok(ChdmanStatus {
+        ready: true,
+        source: ChdmanSource::ManagedDirectory,
+        path: Some(installed_path.to_string_lossy().to_string()),
+        version: detected_version,
+    })
+}
+
+/// Downloads and installs chdman using explicit platform manifest.
+pub async fn download_and_install_manifest<E: EventSink>(
+    manifest: &PlatformManifest,
+    dest_dir: &Path,
+    event_sink: &E,
+) -> Result<ChdmanStatus, DownloadError> {
+    download_and_install_from_url(manifest.download_url, manifest, dest_dir, event_sink).await
+}
+
+/// Auto-detects the host platform, streams the binary/archive, verifies checksum,
+/// and installs chdman into the managed tools directory (`<AppLocalData>/bin/`).
+pub async fn download_and_install_chdman<E: EventSink>(
+    event_sink: &E,
+) -> Result<ChdmanStatus, DownloadError> {
+    let manifest = get_platform_manifest(std::env::consts::OS, std::env::consts::ARCH)
+        .ok_or_else(|| DownloadError::UnsupportedPlatform {
+            os: std::env::consts::OS.to_string(),
+            arch: std::env::consts::ARCH.to_string(),
+        })?;
+    let dest_dir = get_managed_tools_dir()?;
+    download_and_install_manifest(&manifest, &dest_dir, event_sink).await
+}
+

@@ -355,3 +355,35 @@ fn test_trash_source_files() {
     assert!(!file1.exists());
     assert!(!file2.exists());
 }
+
+#[tokio::test]
+async fn test_check_chdman_status_command() {
+    let mock_path = get_mock_chdman_path().to_string_lossy().to_string();
+    let status = check_chdman_status(Some(mock_path.clone())).await.unwrap();
+    assert!(status.ready);
+    assert_eq!(status.source, ChdmanSource::CustomPath);
+    assert_eq!(status.version.as_deref(), Some("0.268"));
+
+    let fallback_status = check_chdman_status(Some("C:/non_existent/path/chdman.exe".to_string()))
+        .await
+        .unwrap();
+    assert_ne!(fallback_status.source, ChdmanSource::CustomPath);
+}
+
+#[tokio::test]
+async fn test_set_custom_chdman_path_valid_and_invalid() {
+    let mock_path = get_mock_chdman_path().to_string_lossy().to_string();
+    let status = set_custom_chdman_path(mock_path.clone()).await.unwrap();
+    assert!(status.ready);
+    assert_eq!(status.source, ChdmanSource::CustomPath);
+    assert_eq!(status.version.as_deref(), Some("0.268"));
+
+    // After setting, check_chdman_status(None) should use stored custom path
+    let current_status = check_chdman_status(None).await.unwrap();
+    assert!(current_status.ready);
+    assert_eq!(current_status.source, ChdmanSource::CustomPath);
+
+    // Invalid path should error
+    let err_result = set_custom_chdman_path("C:/fake_path_does_not_exist/chdman.exe".to_string()).await;
+    assert!(err_result.is_err());
+}

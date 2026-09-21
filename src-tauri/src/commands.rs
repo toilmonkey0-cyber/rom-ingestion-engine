@@ -4,6 +4,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
 
+pub use crate::chdman::downloader::{
+    detect_chdman, download_and_install_chdman, ChdmanSource, ChdmanStatus, DownloadProgressEvent,
+};
 use crate::chdman::runner::ChdmanRunner;
 use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
@@ -15,9 +18,12 @@ use crate::plan_builder::build_ingestion_plan;
 
 /// Abstraction for emitting progress and status events to the frontend or test listener.
 pub trait EventSink: Send + Sync {
-    fn emit_job_progress(&self, event: &JobProgressEvent);
-    fn emit_game_status(&self, event: &GameStatusEvent);
+    fn emit_job_progress(&self, _event: &JobProgressEvent) {}
+    fn emit_game_status(&self, _event: &GameStatusEvent) {}
+    fn emit_download_progress(&self, _event: &DownloadProgressEvent) {}
 }
+
+impl EventSink for () {}
 
 impl EventSink for tauri::AppHandle {
     fn emit_job_progress(&self, event: &JobProgressEvent) {
@@ -27,6 +33,10 @@ impl EventSink for tauri::AppHandle {
     fn emit_game_status(&self, event: &GameStatusEvent) {
         let _ = self.emit("game-status", event);
     }
+
+    fn emit_download_progress(&self, event: &DownloadProgressEvent) {
+        let _ = self.emit("chdman-download-progress", event);
+    }
 }
 
 /// Mock event sink for testing and headless verification.
@@ -34,6 +44,7 @@ impl EventSink for tauri::AppHandle {
 pub struct MockEventSink {
     pub progress_events: Arc<Mutex<Vec<JobProgressEvent>>>,
     pub status_events: Arc<Mutex<Vec<GameStatusEvent>>>,
+    pub download_events: Arc<Mutex<Vec<DownloadProgressEvent>>>,
 }
 
 impl MockEventSink {
@@ -53,6 +64,24 @@ impl EventSink for MockEventSink {
         if let Ok(mut lock) = self.status_events.lock() {
             lock.push(event.clone());
         }
+    }
+
+    fn emit_download_progress(&self, event: &DownloadProgressEvent) {
+        if let Ok(mut lock) = self.download_events.lock() {
+            lock.push(event.clone());
+        }
+    }
+}
+
+static CUSTOM_CHDMAN_PATH: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn get_custom_chdman_path() -> Option<String> {
+    CUSTOM_CHDMAN_PATH.lock().ok().and_then(|guard| guard.clone())
+}
+
+pub fn set_stored_custom_chdman_path(path: Option<String>) {
+    if let Ok(mut guard) = CUSTOM_CHDMAN_PATH.lock() {
+        *guard = path;
     }
 }
 
@@ -183,8 +212,11 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
     let chdman = Arc::new(chdman_override.unwrap_or_else(|| {
-        let env_bin = std::env::var("CHDMAN_PATH").ok().map(PathBuf::from);
-        ChdmanRunner::new(env_bin)
+        let configured_bin = get_custom_chdman_path()
+            .or_else(|| std::env::var("CHDMAN_PATH").ok())
+            .or_else(|| detect_chdman(None).path)
+            .map(PathBuf::from);
+        ChdmanRunner::new(configured_bin)
     }));
 
     let total_games = plan.games.len();
@@ -431,3 +463,44 @@ pub fn trash_source_files(source_files: Vec<String>) -> Result<usize, String> {
 
     Ok(count)
 }
+
+/// Returns the current detection status and availability of chdman.
+#[tauri::command]
+pub async fn check_chdman_status(custom_path: Option<String>) -> Result<ChdmanStatus, String> {
+    let effective_path = custom_path
+        .filter(|p| !p.trim().is_empty())
+        .or_else(get_custom_chdman_path);
+    Ok(detect_chdman(effective_path.as_deref()))
+}
+
+/// Initiates streaming download of platform-specific chdman binary, emits progress events,
+/// verifies cryptographic SHA-256 integrity, and unpacks to the managed directory.
+#[tauri::command]
+pub async fn download_chdman(app_handle: tauri::AppHandle) -> Result<ChdmanStatus, String> {
+    download_and_install_chdman(&app_handle)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Headless download helper for testing and headless verification.
+pub async fn download_chdman_internal<E: EventSink>(event_sink: &E) -> Result<ChdmanStatus, String> {
+    download_and_install_chdman(event_sink)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Validates user-selected binary and persists path for subsequent operations.
+#[tauri::command]
+pub async fn set_custom_chdman_path(path: String) -> Result<ChdmanStatus, String> {
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err(format!("Specified chdman path is not a file: {}", path));
+    }
+    let status = detect_chdman(Some(&path));
+    if !status.ready {
+        return Err(format!("File at '{}' is not a valid executable", path));
+    }
+    set_stored_custom_chdman_path(Some(path));
+    Ok(status)
+}
+

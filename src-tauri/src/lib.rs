@@ -20,6 +20,9 @@ pub fn run() {
             commands::scan_and_plan,
             commands::execute_plan,
             commands::trash_source_files,
+            commands::check_chdman_status,
+            commands::download_chdman,
+            commands::set_custom_chdman_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
