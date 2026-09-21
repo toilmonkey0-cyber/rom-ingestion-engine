@@ -380,3 +380,143 @@ fn real_delete_corrupt_chds_via_app() {
     }
     println!("freed: corrupt CHDs removed from card (backed up on PC)");
 }
+
+/// ES-DE verification library: scan (with platform retarget), convert with
+/// real chdman, and run Finish Line (gamelists + artwork) — the exact
+/// library that will be loaded into real ES-DE on Windows.
+#[tokio::test]
+#[ignore = "requires staging + real chdman (takes minutes)"]
+async fn real_generate_esde_library() {
+    let input = staging().join("esde_in");
+    let output = staging().join("esde_lib");
+    std::fs::create_dir_all(&output).unwrap();
+
+    let mut plan = rom_ingest_core::commands::scan_and_plan(
+        input.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan");
+
+    // Real dumps in per-game folders: apply the platform overrides a user
+    // makes in the dry-run UI (these are known-good: PSX and Dreamcast).
+    for game in plan.games.clone() {
+        let target = if game.discs[0]
+            .source_descriptor
+            .to_string_lossy()
+            .contains("dreamcast")
+        {
+            Platform::Dreamcast
+        } else {
+            Platform::Psx
+        };
+        if game.platform != target {
+            plan = rom_ingest_core::commands::set_game_platform(plan, game.id.clone(), target)
+                .expect("retarget");
+        }
+    }
+
+    assert!(!plan.games.is_empty(), "scan must find the staged games");
+    assert_eq!(plan.skipped_sources.len(), 0, "no skips expected: {}",
+        plan.skipped_sources.iter().map(|s| s.reason.clone()).collect::<Vec<_>>().join("; "));
+
+    let emitter = MockEventSink::new();
+    let summary = execute_plan_internal(&emitter, plan.clone(), None, None)
+        .await
+        .expect("convert");
+    assert_eq!(summary.failed_games, 0, "all conversions must pass");
+
+    let finish = finish_library_internal(&emitter, &plan, true, None)
+        .await
+        .expect("finish line");
+    println!("gamelists: {} art: {}/{} failed: {}",
+        finish.gamelists_written, finish.artwork_downloaded,
+        finish.artwork_downloaded + finish.artwork_failed, finish.artwork_failed);
+
+    // Tree for the record
+    print_tree(&output, 0);
+}
+
+/// Build an ES-DE library directly through the organizer + Finish Line code
+/// paths from already-converted CHDs (scanner does not ingest .chd — known
+/// feature gap). This is the library loaded into real ES-DE for testing.
+#[test]
+#[ignore = "requires staging"]
+fn real_build_esde_library_from_chds() {
+    let input = staging().join("esde_in");
+    let output = staging().join("esde_lib");
+    let _ = std::fs::remove_dir_all(&output);
+    std::fs::create_dir_all(&output).unwrap();
+
+    // Lay out CHDs per the EsDe preset using the organizer itself.
+    for (src, platform) in [
+        ("psx/Alundra (USA) (Rev 1).chd", Platform::Psx),
+        ("psx/Final Fantasy VII (USA) (Disc 1).chd", Platform::Psx),
+        ("psx/Xenogears (USA) (Disc 1).chd", Platform::Psx),
+        ("dreamcast/Crazy Taxi (USA).chd", Platform::Dreamcast),
+    ] {
+        let folder = rom_ingest_core::organizer::presets::get_platform_folder(
+            FrontendPreset::EsDe,
+            platform,
+        );
+        let dest = output.join(folder).join(
+            std::path::Path::new(src).file_name().unwrap(),
+        );
+        std::fs::create_dir_all(dest.parent().unwrap()).unwrap();
+        std::fs::copy(input.join(src), &dest).expect(src);
+    }
+
+    // Minimal plan describing the layout so Finish Line writes gamelists.
+    let mk = |id: &str, title: &str, platform: Platform, region: &str, rel: &str| {
+        let mut g = PlannedGame {
+            id: id.into(),
+            canonical_title: title.into(),
+            platform,
+            region: region.into(),
+            is_multidisc: false,
+            discs: vec![PlannedDisc {
+                disc_number: 1,
+                source_descriptor: "".into(),
+                target_chd_path: output.join(rel),
+                relative_m3u_entry: None,
+                status: TaskStatus::Verified,
+            }],
+            target_m3u_path: None,
+            confidence: 1.0,
+            source: ClassificationSource::Fallback,
+            enabled: true,
+            needs_review: false,
+        };
+        // ES-DE art convention lives next to media/images/<stem>.png
+        g.discs[0].relative_m3u_entry = None;
+        g
+    };
+    let plan = IngestionPlan {
+        input_dir: input.clone(),
+        output_dir: output.clone(),
+        preset: FrontendPreset::EsDe,
+        games: vec![
+            mk("alundra", "Alundra", Platform::Psx, "USA", "roms/psx/Alundra (USA) (Rev 1).chd"),
+            mk("ff7", "Final Fantasy VII", Platform::Psx, "USA", "roms/psx/Final Fantasy VII (USA) (Disc 1).chd"),
+            mk("xeno", "Xenogears", Platform::Psx, "USA", "roms/psx/Xenogears (USA) (Disc 1).chd"),
+            mk("crazy", "Crazy Taxi", Platform::Dreamcast, "USA", "roms/dreamcast/Crazy Taxi (USA).chd"),
+        ],
+        skipped_sources: Vec::new(),
+        total_source_bytes: 0,
+        estimated_output_bytes: 0,
+    };
+
+    let emitter = MockEventSink::new();
+    let finish = finish_library_internal(&emitter, &plan, true, None);
+    // finish_library_internal is async; block via a tiny runtime
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let finish = rt.block_on(finish).expect("finish line");
+    println!("gamelists: {} art downloaded: {} failed: {}",
+        finish.gamelists_written, finish.artwork_downloaded, finish.artwork_failed);
+    print_tree(&output, 0);
+}
+

@@ -61,7 +61,7 @@ impl CustomPresetConfig {
 /// Returns the relative platform directory path for a given frontend preset.
 ///
 /// Mappings:
-/// - **ES-DE**: `roms/{psx,saturn,dreamcast,segacd,pcenginecd}`
+/// - **ES-DE**: `ROMs/{psx,saturn,dreamcast,segacd,pcenginecd}` (ES-DE home-tree convention; gamelists are centralized under `ES-DE/gamelists/`, see `finish_library`)
 /// - **OnionOS**: `Roms/{PS,SEGASATURN,DREAMCAST,SEGACD,PCECD}`
 /// - **AnbernicStock**: `ROMS/{PS,SATURN,DC,MDCD,PCE}`
 /// - **Batocera**: `roms/{psx,saturn,dreamcast,segacd,pcenginecd}`
@@ -69,12 +69,12 @@ impl CustomPresetConfig {
 pub fn get_platform_folder(preset: FrontendPreset, platform: Platform) -> &'static str {
     match preset {
         FrontendPreset::EsDe => match platform {
-            Platform::Psx => "roms/psx",
-            Platform::Saturn => "roms/saturn",
-            Platform::Dreamcast => "roms/dreamcast",
-            Platform::SegaCd => "roms/segacd",
-            Platform::PceCd => "roms/pcenginecd",
-            Platform::Unknown => "roms/unknown",
+            Platform::Psx => "ROMs/psx",
+            Platform::Saturn => "ROMs/saturn",
+            Platform::Dreamcast => "ROMs/dreamcast",
+            Platform::SegaCd => "ROMs/segacd",
+            Platform::PceCd => "ROMs/pcenginecd",
+            Platform::Unknown => "ROMs/unknown",
         },
         FrontendPreset::OnionOs => match platform {
             Platform::Psx => "Roms/PS",

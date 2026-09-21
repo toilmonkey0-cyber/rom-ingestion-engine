@@ -325,12 +325,24 @@ pub fn plan_migration(
         }
 
         let old_gamelist = old_platform_folder.join("gamelist.xml");
+        // Stale per-folder gamelists: always removed. For Batocera targets a
+        // fresh one is generated in the new folder; ES-DE targets use the
+        // centralized ES-DE/gamelists tree instead (written by Finish Line),
+        // so there is no per-folder destination to move into.
         if old_gamelist.is_file() && new_platform_folder != *old_platform_folder {
-            items.push(MigrationItem {
-                kind: MigrationItemKind::StaleGamelist,
-                source: old_gamelist,
-                target: new_platform_folder.join("gamelist.xml"),
-            });
+            if matches!(target_preset, FrontendPreset::Batocera) {
+                items.push(MigrationItem {
+                    kind: MigrationItemKind::StaleGamelist,
+                    source: old_gamelist,
+                    target: new_platform_folder.join("gamelist.xml"),
+                });
+            } else {
+                items.push(MigrationItem {
+                    kind: MigrationItemKind::StaleGamelist,
+                    source: old_gamelist.clone(),
+                    target: old_gamelist, // removed in place
+                });
+            }
         }
     }
 
@@ -477,7 +489,18 @@ pub fn execute_migration<E: crate::commands::EventSink>(
             if entries.is_empty() {
                 continue;
             }
-            let path = folder.join("gamelist.xml");
+            // ES-DE targets use the centralized home-tree location; Batocera
+            // firmware reads gamelist.xml from each system folder.
+            let path = if plan.target_preset == FrontendPreset::EsDe {
+                let system = folder.file_name().and_then(|n| n.to_str()).unwrap_or("unknown");
+                plan.root
+                    .join("ES-DE")
+                    .join("gamelists")
+                    .join(system)
+                    .join("gamelist.xml")
+            } else {
+                folder.join("gamelist.xml")
+            };
             crate::metadata::gamelist::write_gamelist(&path, &entries)
                 .map_err(|e| format!("Cannot write gamelist '{}': {}", path.display(), e))?;
             summary.gamelists_written += 1;

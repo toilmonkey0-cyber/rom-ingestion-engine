@@ -136,9 +136,9 @@ async fn test_finish_library_esde_gamelist_and_artwork() {
     assert!(art_path.exists());
     assert_eq!(std::fs::read(&art_path).unwrap(), art);
 
-    // Gamelist references the m3u for multi-disc, the chd otherwise, and only
-    // carries <image> where art exists.
-    let gamelist = dir.path().join("roms").join("psx").join("gamelist.xml");
+    // Gamelist is centralized in the ES-DE home tree (ES-DE 3.x ignores
+    // ROM-folder gamelists — verified live against 3.4.1).
+    let gamelist = dir.path().join("ES-DE").join("gamelists").join("psx").join("gamelist.xml");
     let xml = std::fs::read_to_string(&gamelist).unwrap();
     assert!(xml.contains("<path>./Final Fantasy VII (USA).m3u</path>"));
     assert!(xml.contains("<name>Final Fantasy VII</name>"));

@@ -25,7 +25,7 @@ fn test_preset_platform_folders() {
     assert_eq!(get_platform_folder(FrontendPreset::AnbernicStock, Platform::SegaCd), "ROMS/MDCD");
     assert_eq!(get_platform_folder(FrontendPreset::AnbernicStock, Platform::PceCd), "ROMS/PCE");
 
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Psx), "roms/psx");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Psx), "ROMs/psx");
     assert_eq!(get_platform_folder(FrontendPreset::OnionOs, Platform::Psx), "Roms/PS");
     assert_eq!(get_platform_folder(FrontendPreset::Batocera, Platform::Psx), "roms/psx");
 }
@@ -61,12 +61,12 @@ fn test_target_paths_resolution() {
 #[test]
 fn test_all_frontend_preset_platform_mappings() {
     // ES-DE
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Psx), "roms/psx");
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Saturn), "roms/saturn");
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Dreamcast), "roms/dreamcast");
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::SegaCd), "roms/segacd");
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::PceCd), "roms/pcenginecd");
-    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Unknown), "roms/unknown");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Psx), "ROMs/psx");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Saturn), "ROMs/saturn");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Dreamcast), "ROMs/dreamcast");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::SegaCd), "ROMs/segacd");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::PceCd), "ROMs/pcenginecd");
+    assert_eq!(get_platform_folder(FrontendPreset::EsDe, Platform::Unknown), "ROMs/unknown");
 
     // OnionOS
     assert_eq!(get_platform_folder(FrontendPreset::OnionOs, Platform::Psx), "Roms/PS");
@@ -152,11 +152,11 @@ fn test_target_paths_resolution_for_classification() {
 
     assert_eq!(
         paths.chd_path,
-        PathBuf::from("D:/RomsCollection/roms/dreamcast/.discs/Shenmue (USA) (Disc 2).chd")
+        PathBuf::from("D:/RomsCollection/ROMs/dreamcast/.discs/Shenmue (USA) (Disc 2).chd")
     );
     assert_eq!(
         paths.m3u_path,
-        Some(PathBuf::from("D:/RomsCollection/roms/dreamcast/Shenmue (USA).m3u"))
+        Some(PathBuf::from("D:/RomsCollection/ROMs/dreamcast/Shenmue (USA).m3u"))
     );
     assert_eq!(
         paths.relative_m3u_entry,

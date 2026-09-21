@@ -160,8 +160,10 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
         }
     }
 
-    // 3. Gamelist phase (ES-DE / Batocera are EmulationStation-derived and
-    //    both read gamelist.xml from the system folder).
+    // 3. Gamelist phase. Batocera's firmware reads gamelist.xml from each
+    //    system folder. ES-DE 3.x (verified against 3.4.1) IGNORES ROM-folder
+    //    gamelists and requires the centralized ES-DE home tree:
+    //    <root>/ES-DE/gamelists/<system>/gamelist.xml.
     if matches!(plan.preset, EsDe | Batocera) {
         let mut by_folder: BTreeMap<PathBuf, Vec<gamelist::GamelistEntry>> = BTreeMap::new();
         for (display, dest, title, _region, _platform) in &targets {
@@ -190,7 +192,22 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
         }
 
         for (folder, entries) in by_folder {
-            let gamelist_path = folder.join("gamelist.xml");
+            let gamelist_path = match plan.preset {
+                EsDe => {
+                    // Centralized home-tree location; <system> is the folder
+                    // name of this gamelist's games.
+                    let system = folder
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("unknown");
+                    plan.output_dir
+                        .join("ES-DE")
+                        .join("gamelists")
+                        .join(system)
+                        .join("gamelist.xml")
+                }
+                _ => folder.join("gamelist.xml"),
+            };
             gamelist::write_gamelist(&gamelist_path, &entries)
                 .map_err(|e| format!("Cannot write gamelist '{}': {}", gamelist_path.display(), e))?;
             summary.gamelists_written += 1;
