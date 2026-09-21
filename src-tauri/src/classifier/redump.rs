@@ -334,6 +334,24 @@ impl RedumpDatabase {
             Some(3),
         );
         self.insert(
+            "933ec98e7c7ff0a8399a454b8cffd222471ff9e7",
+            "Final Fantasy VII",
+            Platform::Psx,
+            "USA",
+            true,
+            Some(1),
+            Some(2),
+        );
+        self.insert(
+            "13e555c970aea8babfc7090bd65636767fa5946a",
+            "Final Fantasy VII",
+            Platform::Psx,
+            "USA",
+            true,
+            Some(2),
+            Some(2),
+        );
+        self.insert(
             "89abcdef0123456789abcdef0123456789abcdef",
             "Castlevania: Symphony of the Night",
             Platform::Psx,

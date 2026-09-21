@@ -268,21 +268,25 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         let mut sources = vec![src.to_string_lossy().to_string()];
 
                         // Discover referenced tracks if cue/gdi
-                        if let Ok(content) = std::fs::read_to_string(&src) {
-                            let ext = src
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .map(|e| e.to_ascii_lowercase());
-                            let refs = if ext.as_deref() == Some("gdi") {
-                                crate::scanner::parse_gdi_references(&content)
-                            } else {
-                                crate::scanner::parse_cue_references(&content)
-                            };
-                            let parent = src.parent().unwrap_or(Path::new(""));
-                            for r in refs {
-                                let track_path = parent.join(r);
-                                if track_path.exists() {
-                                    sources.push(track_path.to_string_lossy().to_string());
+                        let ext = src
+                            .extension()
+                            .and_then(|e| e.to_str())
+                            .map(|e| e.to_ascii_lowercase());
+                        if let Some(ref ext_str) = ext {
+                            if ext_str == "cue" || ext_str == "gdi" {
+                                if let Ok(content) = std::fs::read_to_string(&src) {
+                                    let refs = if ext_str == "gdi" {
+                                        crate::scanner::parse_gdi_references(&content)
+                                    } else {
+                                        crate::scanner::parse_cue_references(&content)
+                                    };
+                                    let parent = src.parent().unwrap_or(Path::new(""));
+                                    for r in refs {
+                                        let track_path = parent.join(r);
+                                        if track_path.exists() {
+                                            sources.push(track_path.to_string_lossy().to_string());
+                                        }
+                                    }
                                 }
                             }
                         }
