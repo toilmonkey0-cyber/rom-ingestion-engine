@@ -41,6 +41,92 @@ fn generate_game_id(platform: Platform, title: &str, index: usize) -> String {
     }
 }
 
+/// Re-resolves one planned game's output paths for a different platform
+/// (per-game override from the dry-run UI). Mutates the plan in place.
+pub fn retarget_game_platform(
+    plan: &mut crate::models::IngestionPlan,
+    game_id: &str,
+    platform: crate::models::Platform,
+) {
+    use crate::organizer::presets::resolve_target_paths_with_custom;
+
+    let Some(game) = plan.games.iter_mut().find(|g| g.id == game_id) else {
+        return;
+    };
+    game.platform = platform;
+
+    // The custom config is not persisted on the plan; Custom preset targets
+    // fall back to defaults, matching how the plan was originally built
+    // without a config.
+    let custom = None;
+    let mut new_m3u = None;
+    let disc_count = game.discs.len() as u8;
+    let is_multidisc = game.is_multidisc;
+    for disc in game.discs.iter_mut() {
+        let targets = resolve_target_paths_with_custom(
+            &plan.output_dir,
+            plan.preset,
+            custom,
+            platform,
+            &game.canonical_title,
+            &game.region,
+            is_multidisc,
+            Some(disc.disc_number),
+            Some(disc_count),
+        );
+        disc.target_chd_path = targets.chd_path;
+        disc.relative_m3u_entry = targets.relative_m3u_entry;
+        if new_m3u.is_none() {
+            new_m3u = targets.m3u_path;
+        }
+    }
+    if is_multidisc {
+        game.target_m3u_path = new_m3u;
+    }
+}
+
+/// Re-resolves one planned game's output paths for a new canonical title
+/// (dry-run rename). The title also drives artwork lookups and file names.
+pub fn retarget_game_title(
+    plan: &mut crate::models::IngestionPlan,
+    game_id: &str,
+    title: &str,
+) {
+    use crate::organizer::presets::{resolve_target_paths_with_custom, sanitize_component};
+
+    let title = sanitize_component(title.trim(), "Game");
+    let Some(game) = plan.games.iter_mut().find(|g| g.id == game_id) else {
+        return;
+    };
+    game.canonical_title = title.clone();
+
+    let custom = None;
+    let mut new_m3u = None;
+    let disc_count = game.discs.len() as u8;
+    let is_multidisc = game.is_multidisc;
+    for disc in game.discs.iter_mut() {
+        let targets = resolve_target_paths_with_custom(
+            &plan.output_dir,
+            plan.preset,
+            custom,
+            game.platform,
+            &title,
+            &game.region,
+            is_multidisc,
+            Some(disc.disc_number),
+            Some(disc_count),
+        );
+        disc.target_chd_path = targets.chd_path;
+        disc.relative_m3u_entry = targets.relative_m3u_entry;
+        if new_m3u.is_none() {
+            new_m3u = targets.m3u_path;
+        }
+    }
+    if is_multidisc {
+        game.target_m3u_path = new_m3u;
+    }
+}
+
 /// Internal temporary representation of a disc during planning.
 struct IntermediateDisc {
     disc_number: u8,

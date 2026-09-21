@@ -124,6 +124,11 @@ export interface PlaylistRewrite {
   entries: string[];
 }
 
+export interface BrokenPlaylist {
+  playlist: string;
+  missing_entries: string[];
+}
+
 export interface MigrationPlan {
   root: string;
   source_preset: FrontendPreset;
@@ -131,6 +136,7 @@ export interface MigrationPlan {
   games: number;
   items: MigrationItem[];
   playlist_rewrites: PlaylistRewrite[];
+  broken_playlists?: BrokenPlaylist[];
 }
 
 export interface MigrationSummary {

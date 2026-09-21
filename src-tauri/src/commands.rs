@@ -825,11 +825,35 @@ pub fn read_image_file(path: String) -> Result<Option<String>, String> {
     Ok(Some(format!("data:{};base64,{}", mime, encoded)))
 }
 
+/// Applies a dry-run rename: updates the canonical title and re-resolves
+/// that game's output file names (CHD, M3U, artwork lookups).
+#[tauri::command]
+pub fn set_game_title(
+    mut plan: IngestionPlan,
+    game_id: String,
+    title: String,
+) -> Result<IngestionPlan, String> {
+    crate::plan_builder::retarget_game_title(&mut plan, &game_id, &title);
+    Ok(plan)
+}
+
+/// Applies a per-game platform override (dry-run UI) and returns the plan
+/// with re-resolved target paths for that game.
+#[tauri::command]
+pub fn set_game_platform(
+    mut plan: IngestionPlan,
+    game_id: String,
+    platform: crate::models::Platform,
+) -> Result<IngestionPlan, String> {
+    crate::plan_builder::retarget_game_platform(&mut plan, &game_id, platform);
+    Ok(plan)
+}
+
 /// Starts or stops the "Incoming" watch folder: while enabled, new dumps
 /// dropped into the input folder are auto-ingested (scan → convert → verify)
 /// after a short quiet period. Sources are never modified.
 #[tauri::command]
-pub fn configure_watch_folder(
+pub async fn configure_watch_folder(
     app_handle: tauri::AppHandle,
     input_dir: String,
     output_dir: String,

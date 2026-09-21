@@ -19,7 +19,7 @@ static INGEST_BUSY: AtomicBool = AtomicBool::new(false);
 
 struct WatchHandle {
     stop: tokio::sync::watch::Sender<bool>,
-    join: tokio::task::JoinHandle<()>,
+    _join: std::thread::JoinHandle<()>,
 }
 
 static WATCH_STATE: Mutex<Option<WatchHandle>> = Mutex::new(None);
@@ -111,8 +111,8 @@ fn fallback_classification(disc: &crate::models::DiscFingerprint) -> GameClassif
 pub fn stop_watch() {
     if let Ok(mut guard) = WATCH_STATE.lock() {
         if let Some(handle) = guard.take() {
+            // The watcher thread notices within one poll interval (500ms).
             let _ = handle.stop.send(true);
-            handle.join.abort();
         }
     }
 }
@@ -149,8 +149,14 @@ pub fn start_watch(
     let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
     let app_for_task = app.clone();
 
-    let join = tokio::task::spawn_blocking(move || {
-        let _watcher = watcher; // keep alive for the task lifetime
+    // Capture the async runtime handle while we are ON the runtime (async
+    // command context); the watcher thread uses it to drive ingestion passes.
+    // A plain thread is used deliberately so the watcher never depends on
+    // being spawned from runtime context.
+    let runtime_handle = tokio::runtime::Handle::current();
+
+    let join = std::thread::spawn(move || {
+        let _watcher = watcher; // keep alive for the thread lifetime
         let mut pending = false;
         let mut last_event = Instant::now();
         let input = input_dir.clone();
@@ -196,7 +202,7 @@ pub fn start_watch(
                 );
 
                 let emitter = app_for_task.clone();
-                let result = futures_block_on(run_watch_ingestion_once(
+                let result = runtime_handle.block_on(run_watch_ingestion_once(
                     &emitter,
                     &input,
                     &output,
@@ -230,14 +236,7 @@ pub fn start_watch(
     });
 
     if let Ok(mut guard) = WATCH_STATE.lock() {
-        *guard = Some(WatchHandle { stop: stop_tx, join });
+        *guard = Some(WatchHandle { stop: stop_tx, _join: join });
     }
     Ok(())
-}
-
-/// Blocks the current thread on `fut` (used inside the dedicated watcher
-/// thread, where blocking is expected).
-fn futures_block_on<F: std::future::Future>(fut: F) -> F::Output {
-    // The watcher thread has no runtime of its own; borrow the app's.
-    tokio::runtime::Handle::current().block_on(fut)
 }

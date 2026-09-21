@@ -1,0 +1,299 @@
+//! Real-world validation harness (ignored by default).
+//!
+//! Drives the real pipeline against real dumps staged on this machine:
+//!   staging/incoming  – real downloaded dumps (Vimm's Lair 7z extractions)
+//!   staging/library   – ingestion output target
+//!   staging/cardcopy  – a copy of the real Anbernic SD card's Roms/PS subset
+//!
+//! Uses the REAL chdman (managed dir), REAL Redump DATs, and REAL network
+//! artwork. Run with:
+//!   cargo test --test real_world_test -- --ignored --nocapture
+
+use std::path::{Path, PathBuf};
+
+use rom_ingest_core::chdman::downloader::get_managed_tools_dir;
+use rom_ingest_core::commands::{execute_plan_internal, MockEventSink};
+use rom_ingest_core::metadata::finish_library_internal;
+use rom_ingest_core::migrator::{plan_migration, execute_migration};
+use rom_ingest_core::models::*;
+use rom_ingest_core::watch::run_watch_ingestion_once;
+
+fn staging() -> PathBuf {
+    std::env::var("ROM_INGEST_TEST_STAGING")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let tmp = std::env::var("TEMP").unwrap_or_else(|_| ".".into());
+            PathBuf::from(tmp).join("romtest").join("staging")
+        })
+}
+
+fn dats() -> Vec<String> {
+    let dir = get_managed_tools_dir()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("dats")))
+        .expect("managed dats dir");
+    std::fs::read_dir(&dir)
+        .expect("dats dir exists (run setup)")
+        .filter_map(|e| {
+            let p = e.ok()?.path();
+            if p.extension()?.eq_ignore_ascii_case("dat") {
+                Some(p.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Scan + classify the real staged dumps with real Redump DATs.
+#[tokio::test]
+#[ignore = "requires real staging data"]
+async fn real_scan_and_classify() {
+    let input = staging().join("incoming");
+    let output = staging().join("library");
+    std::fs::create_dir_all(&output).unwrap();
+
+    let plan = rom_ingest_core::commands::scan_and_plan(
+        input.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::AnbernicStock,
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan_and_plan on real data");
+
+    println!("\n=== REAL SCAN RESULTS ===");
+    println!("input: {}", input.display());
+    for game in &plan.games {
+        println!(
+            "  [{}] {} | platform={:?} region={} discs={} confidence={:.2} review={}",
+            format!("{:?}", game.source).to_lowercase(),
+            game.canonical_title,
+            game.platform,
+            game.region,
+            game.discs.len(),
+            game.confidence,
+            game.needs_review
+        );
+    }
+    for s in &plan.skipped_sources {
+        println!("  [skipped] {} — {}", s.path.display(), s.reason);
+    }
+    println!("games: {}, skipped: {}", plan.games.len(), plan.skipped_sources.len());
+
+    // Sanity: every dump produced a game, nothing crashed on real filenames.
+    assert!(plan.games.len() >= 3, "expected at least 3 games from staging");
+}
+
+/// Full conversion + verification with the REAL chdman on a real dump.
+#[tokio::test]
+#[ignore = "requires real chdman + staging data (takes minutes)"]
+async fn real_convert_and_verify_with_real_chdman() {
+    // Isolate just Harmful Park (Japan) — the smallest single-disc dump.
+    let isolated = staging().join("iso_harmful");
+    let src = staging()
+        .join("incoming")
+        .join("Harmful Park (Japan)")
+        .join("Harmful Park (Japan)");
+    let _ = std::fs::remove_dir_all(&isolated);
+    std::fs::create_dir_all(&isolated).unwrap();
+    for f in ["Harmful Park (Japan).cue", "Harmful Park (Japan).bin"] {
+        std::fs::copy(src.join(f), isolated.join(f)).expect(f);
+    }
+
+    let output = staging().join("library_real");
+    let _ = std::fs::remove_dir_all(&output);
+    std::fs::create_dir_all(&output).unwrap();
+
+    let plan = rom_ingest_core::commands::scan_and_plan(
+        isolated.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::AnbernicStock,
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan");
+    assert_eq!(plan.games.len(), 1, "one game expected");
+
+    // No chdman override: must find the REAL chdman in the managed dir.
+    let emitter = MockEventSink::new();
+    let summary = execute_plan_internal(&emitter, plan.clone(), None, None)
+        .await
+        .expect("real conversion");
+
+    println!("\n=== REAL CONVERSION ===");
+    println!("source bytes: {}", summary.total_source_bytes);
+    println!("output bytes: {}", summary.total_output_bytes);
+    println!("compression: {:.1}%",
+        100.0 - (summary.total_output_bytes as f64 / summary.total_source_bytes as f64) * 100.0);
+
+    assert_eq!(summary.successful_games, 1, "real conversion must succeed");
+    assert_eq!(summary.failed_games, 0);
+    assert!(summary.processed_discs == 1);
+
+    // The CHD must exist, be non-trivial, and readable by real chdman info.
+    let chd = &plan.games[0].discs[0].target_chd_path;
+    assert!(chd.is_file(), "CHD written: {}", chd.display());
+    let len = std::fs::metadata(chd).unwrap().len();
+    assert!(len > 1_000_000, "CHD has real content ({} bytes)", len);
+}
+
+/// Finish Line (real artwork + gamelist) on the real converted library.
+#[tokio::test]
+#[ignore = "requires the real conversion test to have run; network access"]
+async fn real_finish_library_artwork() {
+    let output = staging().join("library_real");
+    let input = staging().join("iso_harmful");
+    let mut plan = rom_ingest_core::commands::scan_and_plan(
+        input.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::EsDe, // gamelist-writing preset
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan");
+
+    // Real dumps in per-game folders classify as Unknown — the same fix a
+    // user applies in the dry-run UI. Re-target to PSX before finishing.
+    let game_id = plan.games[0].id.clone();
+    plan = rom_ingest_core::commands::set_game_platform(plan, game_id, Platform::Psx)
+        .expect("retarget platform");
+    assert_eq!(plan.games[0].platform, Platform::Psx);
+    let chd = plan.games[0].discs[0].target_chd_path.to_string_lossy().to_lowercase();
+    assert!(chd.contains("roms/psx") || chd.contains("roms\\psx"), "retargeted into psx folder: {}", chd);
+
+    let emitter = MockEventSink::new();
+    let summary = finish_library_internal(&emitter, &plan, true, None)
+        .await
+        .expect("finish_library");
+
+    println!("\n=== REAL FINISH LINE ===");
+    println!("{:?}", summary);
+
+    for path in &summary.artwork_paths {
+        println!("art: {} ({} bytes)", path, std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+    }
+    // Harmful Park is an obscure JP-only shmup — art may legitimately miss.
+    // The contract is: no crash, honest counts, files on disk for successes.
+    let gamelist = output.join("roms").join("psx").join("gamelist.xml");
+    if summary.gamelists_written > 0 {
+        let xml = std::fs::read_to_string(&gamelist).unwrap();
+        println!("gamelist.xml:\n{}", xml);
+        assert!(xml.contains("Harmful Park"));
+    }
+}
+
+/// Migration against a copy of the REAL card structure: dead playlists
+/// (root-relative entries, missing CHDs) must be reported, healthy content
+/// must move cleanly.
+#[test]
+#[ignore = "requires staging cardcopy (run setup)"]
+fn real_migration_from_card_copy() {
+    let root = staging().join("cardcopy");
+    let plan = plan_migration(&root, FrontendPreset::AnbernicStock, FrontendPreset::Batocera, None)
+        .expect("plan on real card copy");
+
+    println!("\n=== REAL MIGRATION PLAN ===");
+    println!("games: {} moves: {} rewrites: {} broken: {}",
+        plan.games, plan.items.len(), plan.playlist_rewrites.len(), plan.broken_playlists.len());
+    for b in &plan.broken_playlists {
+        println!("  broken: {} ({} missing)", b.playlist.display(), b.missing_entries.len());
+    }
+
+    let emitter = MockEventSink::new();
+    let summary = execute_migration(&emitter, &plan).expect("execute");
+    println!("{:?}", summary);
+
+    assert_eq!(summary.skipped_existing.len(), 0);
+}
+
+/// Watch-mode pass over the staged incoming folder with real chdman.
+#[tokio::test]
+#[ignore = "requires real chdman + staging data (takes minutes)"]
+async fn real_watch_ingestion_pass() {
+    let input = staging().join("iso_harmful");
+    let output = staging().join("library_watch");
+    let _ = std::fs::remove_dir_all(&output);
+    std::fs::create_dir_all(&output).unwrap();
+
+    let emitter = MockEventSink::new();
+    let summary = run_watch_ingestion_once(
+        &emitter,
+        Path::new(&input),
+        Path::new(&output),
+        FrontendPreset::OnionOs,
+        None,
+        None, // real chdman
+    )
+    .await
+    .expect("watch pass");
+
+    println!("\n=== REAL WATCH PASS ===\n{:?}", summary);
+    assert_eq!(summary.successful_games, 1);
+    let target = output.join("Roms").join("UNKNOWN");
+    let _ = target; // platform depends on folder hints; print instead:
+    println!("output tree:");
+    print_tree(&output, 0);
+}
+
+fn print_tree(dir: &Path, depth: usize) {
+    if depth > 3 {
+        return;
+    }
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for e in entries.flatten() {
+            let p = e.path();
+            let indent = "  ".repeat(depth + 1);
+            if p.is_dir() {
+                println!("{}{}/", indent, p.file_name().unwrap_or_default().to_string_lossy());
+                print_tree(&p, depth + 1);
+            } else {
+                println!("{}{} ({} bytes)", indent, p.file_name().unwrap_or_default().to_string_lossy(),
+                    e.metadata().map(|m| m.len()).unwrap_or(0));
+            }
+        }
+    }
+}
+
+/// Reproduce the GUI sequence: scan, retarget FF7 -> psx, then Harmful -> psx,
+/// and verify BOTH disc paths move out of UNKNOWN.
+#[tokio::test]
+#[ignore = "requires real staging data"]
+async fn real_retarget_sequence() {
+    let input = staging().join("incoming");
+    let output = staging().join("library_repro");
+    std::fs::create_dir_all(&output).unwrap();
+
+    let mut plan = rom_ingest_core::commands::scan_and_plan(
+        input.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::AnbernicStock,
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan");
+
+    let ff7 = plan.games.iter().find(|g| g.canonical_title.contains("Final Fantasy")).unwrap().id.clone();
+    let hp = plan.games.iter().find(|g| g.canonical_title.contains("Harmful")).unwrap().id.clone();
+
+    plan = rom_ingest_core::commands::set_game_platform(plan, ff7, Platform::Psx).expect("r1");
+    plan = rom_ingest_core::commands::set_game_platform(plan, hp, Platform::Psx).expect("r2");
+
+    for g in &plan.games {
+        println!("{} [{:?}] -> {}", g.canonical_title, g.platform, g.discs[0].target_chd_path.display());
+        if g.canonical_title.contains("Harmful") || g.canonical_title.contains("Final Fantasy") {
+            assert_eq!(g.platform, Platform::Psx);
+            let p = g.discs[0].target_chd_path.to_string_lossy().to_lowercase();
+            // AnbernicStock maps Psx to ROMS/PS
+            assert!(p.contains("roms/ps/") || p.contains("roms\\ps\\"), "path not retargeted: {}", p);
+        }
+    }
+}

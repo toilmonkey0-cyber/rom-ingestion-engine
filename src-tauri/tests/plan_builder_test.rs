@@ -239,3 +239,47 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
     assert_eq!(plan.games[0].discs.len(), 2);
     assert!(plan.games[0].target_m3u_path.is_some());
 }
+
+#[test]
+fn test_retarget_title_and_platform_rebuild_paths() {
+    use rom_ingest_core::models::*;
+    use rom_ingest_core::plan_builder::{retarget_game_platform, retarget_game_title};
+
+    let plan = build_ingestion_plan(
+        PathBuf::from("in"),
+        PathBuf::from("out"),
+        FrontendPreset::AnbernicStock,
+        None,
+        vec![(
+            DiscFingerprint {
+                primary_file: PathBuf::from("in/psx/Game (USA).cue"),
+                binary_tracks: vec![PathBuf::from("in/psx/Game (USA).bin")],
+                detected_platform: Platform::Unknown,
+                calculated_sha1: None,
+                total_bytes: 100,
+            },
+            GameClassification {
+                canonical_title: "Wrong Title".into(),
+                platform: Platform::Unknown,
+                region: "USA".into(),
+                is_multidisc: false,
+                disc_number: None,
+                total_discs: None,
+                confidence: 0.7,
+                source: ClassificationSource::Fallback,
+            },
+        )],
+        Vec::new(),
+    );
+    let id = plan.games[0].id.clone();
+
+    let mut plan = plan;
+    retarget_game_title(&mut plan, &id, "Correct Title: Special Edition");
+    let p = plan.games[0].discs[0].target_chd_path.to_string_lossy().to_string();
+    assert!(p.contains("Correct Title Special Edition"), "illegal chars sanitized + renamed: {}", p);
+
+    retarget_game_platform(&mut plan, &id, Platform::Psx);
+    let p2 = plan.games[0].discs[0].target_chd_path.to_string_lossy().to_lowercase();
+    assert!(p2.contains("roms/ps/") || p2.contains("roms\\ps\\"), "platform folder applied: {}", p2);
+    assert_eq!(plan.games[0].platform, Platform::Psx);
+}

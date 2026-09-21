@@ -22,6 +22,8 @@ import {
   finishLibraryApi,
   configureWatchFolderApi,
   listenWatchStatusApi,
+  setGamePlatformApi,
+  setGameTitleApi,
   DEFAULT_CUSTOM_PRESET,
 } from '../services/tauri';
 
@@ -75,6 +77,8 @@ export interface IngestionState {
   updateGameTitle: (gameId: string, newTitle: string) => void;
   toggleGameEnabled: (gameId: string) => void;
   setAllGamesEnabled: (enabled: boolean) => void;
+  setGamePlatform: (gameId: string, platform: import('../types/plan').Platform) => Promise<void>;
+  renameGame: (gameId: string, title: string) => Promise<void>;
   startScan: () => Promise<void>;
   startExecution: () => Promise<void>;
   trashSourceFiles: () => Promise<number>;
@@ -84,6 +88,10 @@ export interface IngestionState {
   setCustomChdmanPath: (path: string) => Promise<void>;
   reset: () => void;
 }
+
+// Serializes plan mutations (title/platform edits) so execution never
+// captures a plan that is mid-update: startExecution awaits this chain first.
+let planOpsChain: Promise<void> = Promise.resolve();
 
 export const useIngestionStore = create<IngestionState>((set, get) => ({
   step: 1,
@@ -156,12 +164,29 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   setError: (error) => set({ error }),
 
   updateGameTitle: (gameId, newTitle) => {
+    // Instant display-only echo; the durable rename (with re-resolved file
+    // names) goes through renameGame below.
     const plan = get().plan;
     if (!plan) return;
     const updatedGames = plan.games.map((game) =>
       game.id === gameId ? { ...game, canonical_title: newTitle } : game
     );
     set({ plan: { ...plan, games: updatedGames } });
+  },
+
+  renameGame: async (gameId, title) => {
+    const run = async () => {
+      const plan = get().plan;
+      if (!plan) return;
+      try {
+        const updated = await setGameTitleApi(plan, gameId, title);
+        set({ plan: updated, error: null });
+      } catch (err: unknown) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    };
+    planOpsChain = planOpsChain.then(run, run);
+    await planOpsChain;
   },
 
   toggleGameEnabled: (gameId) => {
@@ -178,6 +203,21 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     if (!plan) return;
     const updatedGames = plan.games.map((game) => ({ ...game, enabled }));
     set({ plan: { ...plan, games: updatedGames } });
+  },
+
+  setGamePlatform: async (gameId, platform) => {
+    const run = async () => {
+      const plan = get().plan;
+      if (!plan) return;
+      try {
+        const updated = await setGamePlatformApi(plan, gameId, platform);
+        set({ plan: updated, error: null });
+      } catch (err: unknown) {
+        set({ error: err instanceof Error ? err.message : String(err) });
+      }
+    };
+    planOpsChain = planOpsChain.then(run, run);
+    await planOpsChain;
   },
 
   startScan: async () => {
@@ -213,6 +253,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   },
 
   startExecution: async () => {
+    await planOpsChain; // never execute a plan that is mid-mutation
     const { plan, isExecuting } = get();
     if (!plan) return;
     if (isExecuting) return; // reentrancy guard: never run two pipelines at once

@@ -20,6 +20,8 @@ import {
 import { PlannedGame } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
 
+const PLATFORM_OPTIONS = ['psx', 'saturn', 'dreamcast', 'segacd', 'pcecd', 'unknown'] as const;
+
 export interface Step2DryRunTableProps {
   games?: PlannedGame[];
   onToggleGame?: (id: string) => void;
@@ -47,6 +49,7 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
 
   const games = propGames ?? store.plan?.games ?? [];
   const toggleGame = propToggleGame ?? store.toggleGameEnabled;
+  const setPlatform = store.setGamePlatform;
   const updateTitle = propUpdateTitle ?? store.updateGameTitle;
   const handleProceed = propProceed ?? store.startExecution;
   const handleBack = propBack ?? (() => store.setStep(1));
@@ -83,6 +86,8 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
   const handleSaveEdit = (gameId: string) => {
     if (editingText.trim()) {
       updateTitle(gameId, editingText.trim());
+      // Durable rename: re-resolves output file names on the backend.
+      store.renameGame(gameId, editingText.trim());
     }
     setEditingId(null);
   };
@@ -270,11 +275,20 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
                         />
                       </td>
 
-                      {/* Platform Badge */}
+                      {/* Platform (editable — folder-hint misses need a manual call) */}
                       <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="font-mono font-semibold px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-200 border border-slate-700 uppercase">
-                          {game.platform}
-                        </span>
+                        <select
+                          value={game.platform}
+                          onChange={(e) => setPlatform(game.id, e.target.value as import('../types/plan').Platform)}
+                          title="Platform determines the output folder"
+                          className="font-mono font-semibold px-2 py-1 rounded text-[11px] bg-slate-800 text-slate-200 border border-slate-700 uppercase focus:outline-none focus:ring-2 focus:ring-cyan-500/50 cursor-pointer"
+                        >
+                          {PLATFORM_OPTIONS.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
                       </td>
 
                       {/* Title & Inline Editor */}

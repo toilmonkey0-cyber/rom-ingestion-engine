@@ -168,7 +168,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<ScanResult, ScannerErro
     let mut all_files = Vec::new();
     collect_files(root, &mut all_files)?;
 
-    let mut descriptors = Vec::new();
+    let mut descriptors: Vec<PathBuf> = Vec::new();
     let mut standalone_candidates = Vec::new();
 
     for file in all_files {
@@ -183,6 +183,12 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<ScanResult, ScannerErro
     let mut paired_tracks: HashSet<PathBuf> = HashSet::new();
     let mut fingerprints = Vec::new();
     let mut skipped: Vec<SkippedDisc> = Vec::new();
+
+    // Real-world Dreamcast dumps ship BOTH a .cue and a .gdi describing the
+    // same tracks; ingesting both would duplicate the game. When descriptors
+    // in the same directory reference overlapping track sets, keep the .gdi
+    // (the native GD-ROM layout) and drop the .cue.
+    descriptors = dedupe_cue_gdi_descriptors(descriptors);
 
     for desc_path in descriptors {
         let parent = desc_path.parent().unwrap_or(Path::new(""));
@@ -289,4 +295,71 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<ScanResult, ScannerErro
         fingerprints,
         skipped,
     })
+}
+
+/// Removes duplicate descriptors: when a cue and a gdi in the same folder
+/// reference an overlapping set of track files, only the gdi is kept.
+fn dedupe_cue_gdi_descriptors(descriptors: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut dropped: HashSet<PathBuf> = HashSet::new();
+    for i in 0..descriptors.len() {
+        if dropped.contains(&descriptors[i]) {
+            continue;
+        }
+        let is_gdi_i = descriptors[i]
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("gdi"))
+            .unwrap_or(false);
+        if !is_gdi_i {
+            continue;
+        }
+        let tracks_i = descriptor_track_set(&descriptors[i]);
+        for j in 0..descriptors.len() {
+            if i == j || dropped.contains(&descriptors[j]) {
+                continue;
+            }
+            let is_cue_j = descriptors[j]
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("cue"))
+                .unwrap_or(false);
+            if !is_cue_j {
+                continue;
+            }
+            if descriptors[i].parent() == descriptors[j].parent() {
+                let tracks_j = descriptor_track_set(&descriptors[j]);
+                let overlap = tracks_j.intersection(&tracks_i).count();
+                if overlap > 0 && overlap == tracks_j.len() {
+                    dropped.insert(descriptors[j].clone());
+                }
+            }
+        }
+    }
+    descriptors
+        .into_iter()
+        .filter(|d| !dropped.contains(d))
+        .collect()
+}
+
+fn descriptor_track_set(desc: &Path) -> HashSet<PathBuf> {
+    let mut set = HashSet::new();
+    let Some(parent) = desc.parent() else { return set };
+    let Some(content) = std::fs::read_to_string(desc).ok() else { return set };
+    let is_gdi = desc
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("gdi"))
+        .unwrap_or(false);
+    let refs = if is_gdi {
+        cue_parser::parse_gdi_references(&content)
+    } else {
+        cue_parser::parse_cue_references(&content)
+    };
+    for r in refs {
+        let resolved = cue_parser::resolve_path_case_insensitive(parent, &r);
+        if let Some(p) = resolved {
+            set.insert(p);
+        }
+    }
+    set
 }

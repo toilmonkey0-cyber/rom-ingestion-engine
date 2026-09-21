@@ -483,3 +483,53 @@ export async function listenWatchStatusApi(
   });
   return unlisten;
 }
+
+export async function setGamePlatformApi(
+  plan: IngestionPlan,
+  gameId: string,
+  platform: Platform
+): Promise<IngestionPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<IngestionPlan>('set_game_platform', { plan, gameId, platform });
+  }
+  // Browser simulation: swap platform and rewrite the platform folder in paths.
+  const folderFor: Record<Platform, string> = {
+    psx: 'roms/psx',
+    saturn: 'roms/saturn',
+    dreamcast: 'roms/dreamcast',
+    segacd: 'roms/segacd',
+    pcecd: 'roms/pcenginecd',
+    unknown: 'roms/unknown',
+  };
+  return {
+    ...plan,
+    games: plan.games.map((g) =>
+      g.id !== gameId
+        ? g
+        : {
+            ...g,
+            platform,
+            discs: g.discs.map((d) => ({
+              ...d,
+              target_chd_path: d.target_chd_path.replace(/\/[^\/]+\//, '/' + folderFor[platform] + '/'),
+            })),
+          }
+    ),
+  };
+}
+
+export async function setGameTitleApi(
+  plan: IngestionPlan,
+  gameId: string,
+  title: string
+): Promise<IngestionPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<IngestionPlan>('set_game_title', { plan, gameId, title });
+  }
+  return {
+    ...plan,
+    games: plan.games.map((g) => (g.id === gameId ? { ...g, canonical_title: title } : g)),
+  };
+}

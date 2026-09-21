@@ -32,6 +32,8 @@ pub fn run() {
             commands::download_redump_dats,
             commands::read_image_file,
             commands::configure_watch_folder,
+            commands::set_game_platform,
+            commands::set_game_title,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

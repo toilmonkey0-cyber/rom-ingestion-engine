@@ -180,6 +180,19 @@ export const MigrationPanel: React.FC = () => {
                 <li className="text-slate-500">…and {plan.items.length - 8} more</li>
               )}
             </ul>
+            {(plan.broken_playlists?.length ?? 0) > 0 && (
+              <div className="bg-amber-950/30 border border-amber-800/50 rounded-lg p-3 text-[11px] text-amber-200/80 space-y-1">
+                <p className="font-semibold text-amber-300">
+                  {plan.broken_playlists!.length} playlist(s) reference missing disc files — they
+                  will be migrated as-is but cannot boot until the discs are re-ingested.
+                </p>
+                {plan.broken_playlists!.slice(0, 4).map((b, i) => (
+                  <p key={i} className="font-mono truncate" title={b.missing_entries.join(', ')}>
+                    {b.playlist.split(/[\\/]/).pop()} · {b.missing_entries.length} missing
+                  </p>
+                ))}
+              </div>
+            )}
             <button
               type="button"
               onClick={handleExecute}

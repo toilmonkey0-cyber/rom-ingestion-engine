@@ -44,6 +44,17 @@ pub struct MigrationPlan {
     pub games: usize,
     pub items: Vec<MigrationItem>,
     pub playlist_rewrites: Vec<PlaylistRewrite>,
+    /// Playlists referencing disc files that do not exist on disk. They are
+    /// migrated as-is (or reported) but cannot be repaired by moving files —
+    /// surfaced so the dry run tells the truth about library health.
+    #[serde(default)]
+    pub broken_playlists: Vec<BrokenPlaylist>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenPlaylist {
+    pub playlist: PathBuf,
+    pub missing_entries: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +157,7 @@ pub fn plan_migration(
 
     let mut items: Vec<MigrationItem> = Vec::new();
     let mut rewrites: Vec<PlaylistRewrite> = Vec::new();
+    let mut broken: Vec<BrokenPlaylist> = Vec::new();
     let mut games = 0usize;
     let mut referenced_chds: HashSet<String> = HashSet::new();
     let mut migrated_stems: Vec<(PathBuf /* old platform folder */, String /* stem */, bool /* multidisc */, PathBuf /* new m3u or chd target */)> =
@@ -177,10 +189,20 @@ pub fn plan_migration(
         let stem = m3u.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
         games += 1;
 
-        // Move each referenced CHD into the new layout.
+        // Move each referenced CHD into the new layout. Playlist entries may
+        // be relative to the playlist, or root-relative with a leading slash
+        // (real-world cards use both); try playlist-relative first, then root.
+        let mut missing: Vec<String> = Vec::new();
         for entry in &entries {
-            let old_chd = platform_folder.join(entry.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str()));
+            let rel = entry.trim_start_matches('/');
+            let rel = rel.replace('/', std::path::MAIN_SEPARATOR.to_string().as_str());
+            let old_chd = if platform_folder.join(&rel).is_file() {
+                platform_folder.join(&rel)
+            } else {
+                root.join(&rel)
+            };
             if !old_chd.is_file() {
+                missing.push(entry.clone());
                 continue;
             }
             referenced_chds.insert(rel_key(root, &old_chd));
@@ -195,6 +217,13 @@ pub fn plan_migration(
             if new_chd != old_chd {
                 items.push(MigrationItem { kind: MigrationItemKind::Chd, source: old_chd.clone(), target: new_chd });
             }
+        }
+
+        if !missing.is_empty() {
+            broken.push(BrokenPlaylist {
+                playlist: m3u.clone(),
+                missing_entries: missing,
+            });
         }
 
         // Move the playlist itself.
@@ -314,6 +343,7 @@ pub fn plan_migration(
         games,
         items,
         playlist_rewrites: rewrites,
+        broken_playlists: broken,
     })
 }
 

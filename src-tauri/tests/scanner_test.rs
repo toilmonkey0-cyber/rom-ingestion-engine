@@ -264,3 +264,33 @@ fn test_scan_directory_non_existent_and_empty() {
     let discs = scan_directory(&empty_dir).expect("empty scan should succeed").fingerprints;
     assert!(discs.is_empty());
 }
+
+#[test]
+fn test_scan_dedupes_cue_and_gdi_for_same_discs() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("Soulcalibur (USA)");
+    fs::create_dir_all(&root).unwrap();
+
+    // Real-world DC dump shape: one .cue AND one .gdi referencing the same bins.
+    for t in ["track01.bin", "track02.bin", "track03.bin"] {
+        File::create(root.join(t)).unwrap().write_all(b"data").unwrap();
+    }
+    File::create(root.join("game.cue"))
+        .unwrap()
+        .write_all(b"FILE \"track01.bin\" BINARY\n  TRACK 01 MODE1/2352\nFILE \"track02.bin\" BINARY\n  TRACK 02 AUDIO\nFILE \"track03.bin\" BINARY\n  TRACK 03 AUDIO\n")
+        .unwrap();
+    File::create(root.join("game.gdi"))
+        .unwrap()
+        .write_all(b"3\n1 0 4 2352 track01.bin 0\n2 450 0 2352 track02.bin 0\n3 45000 0 2352 track03.bin 0\n")
+        .unwrap();
+
+    let result = scan_directory(&root).expect("scan");
+    // Exactly one disc (the gdi), not two.
+    assert_eq!(result.fingerprints.len(), 1, "cue+gdi pair must deduplicate to one disc");
+    assert!(result.fingerprints[0]
+        .primary_file
+        .extension()
+        .unwrap()
+        .eq_ignore_ascii_case("gdi"));
+    assert_eq!(result.fingerprints[0].detected_platform, Platform::Dreamcast);
+}

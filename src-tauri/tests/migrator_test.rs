@@ -139,3 +139,48 @@ fn test_migration_is_idempotent_on_rerun() {
     assert_eq!(summary2.files_moved, 0);
     assert!(root.join("Roms").join("PS").join("Solo.chd").is_file());
 }
+
+#[test]
+fn test_migration_handles_root_relative_entries_and_reports_broken_playlists() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("card");
+    // Real-world Anbernic card shape: playlist entries are root-relative
+    // ("/_hidden/multi-disc/...") and — as found on actual cards — some
+    // referenced CHDs are missing entirely (dead playlists).
+    let ps = root.join("Roms").join("PS");
+    write(
+        &ps.join("Healthy (USA).m3u"),
+        b"/_hidden/multi-disc/Healthy (USA) (Disc 1).chd\n/_hidden/multi-disc/Healthy (USA) (Disc 2).chd\n",
+    );
+    write(&root.join("_hidden").join("multi-disc").join("Healthy (USA) (Disc 1).chd"), b"a");
+    write(&root.join("_hidden").join("multi-disc").join("Healthy (USA) (Disc 2).chd"), b"b");
+    write(
+        &ps.join("Dead Game (USA).m3u"),
+        b"/_hidden/multi-disc/Dead Game (USA) (Disc 1).chd\n",
+    );
+
+    let plan = plan_migration(&root, FrontendPreset::AnbernicStock, FrontendPreset::Batocera, None)
+        .expect("plan");
+
+    // The healthy playlist's CHDs are found via root-relative resolution.
+    assert!(plan
+        .items
+        .iter()
+        .any(|i| i.kind == MigrationItemKind::Chd
+            && i.source.ends_with("Healthy (USA) (Disc 1).chd")));
+    // Entries are rewritten to the target subfolder convention.
+    assert_eq!(plan.playlist_rewrites.len(), 2);
+
+    // The dead playlist is reported, not silently dropped.
+    assert_eq!(plan.broken_playlists.len(), 1);
+    assert!(plan.broken_playlists[0].playlist.ends_with("Dead Game (USA).m3u"));
+    assert_eq!(plan.broken_playlists[0].missing_entries.len(), 1);
+
+    let emitter = MockEventSink::new();
+    execute_migration(&emitter, &plan).expect("execute");
+    let new_ps = root.join("roms").join("psx");
+    assert!(new_ps.join(".discs").join("Healthy (USA) (Disc 1).chd").is_file());
+    let m3u = fs::read_to_string(new_ps.join("Healthy (USA).m3u")).unwrap();
+    assert!(m3u.contains(".discs/Healthy (USA) (Disc 1).chd"));
+    assert!(!m3u.contains("_hidden"), "entries must be rewritten, not copied");
+}
