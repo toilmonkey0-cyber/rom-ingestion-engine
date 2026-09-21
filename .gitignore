@@ -1,0 +1,8 @@
+# Git ignore for ROM Ingestion Engine
+.superpowers/
+node_modules/
+target/
+dist/
+*.part
+.DS_Store
+Thumbs.db
