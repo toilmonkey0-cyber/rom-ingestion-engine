@@ -23,6 +23,7 @@ pub fn run() {
             commands::check_chdman_status,
             commands::download_chdman,
             commands::set_custom_chdman_path,
+            commands::resolve_game_artwork,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

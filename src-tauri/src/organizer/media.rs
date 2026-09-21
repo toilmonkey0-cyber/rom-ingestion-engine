@@ -162,3 +162,187 @@ pub fn resolve_preset_media_path(
     let base_dir = join_forward_slashes(output_dir, platform_folder);
     PathBuf::from(format!("{}/{}/{}", base_dir, rel_media_folder, filename))
 }
+
+/// Resolves the first available artwork CDN URL for a given platform, title, and region.
+pub async fn resolve_artwork_url(
+    client: &reqwest::Client,
+    platform: Platform,
+    title: &str,
+    region: &str,
+) -> Option<String> {
+    let candidates = generate_candidate_urls(platform, title, region, MediaType::BoxArt);
+    resolve_artwork_url_from_candidates(client, &candidates).await
+}
+
+/// Queries each candidate CDN URL using HTTP HEAD requests in order,
+/// returning the first URL that returns HTTP 200 OK.
+pub async fn resolve_artwork_url_from_candidates(
+    client: &reqwest::Client,
+    candidates: &[String],
+) -> Option<String> {
+    for url in candidates {
+        if let Ok(res) = client.head(url).send().await {
+            if res.status() == reqwest::StatusCode::OK {
+                return Some(url.clone());
+            }
+        }
+    }
+    None
+}
+
+/// Helper RAII guard that cleans up partial download files on early exit or error.
+struct PartFileGuard {
+    path: PathBuf,
+    completed: bool,
+}
+
+impl Drop for PartFileGuard {
+    fn drop(&mut self) {
+        if !self.completed && self.path.exists() {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+/// Asynchronously downloads a media file to `dest_path` using an atomic write pattern.
+///
+/// Writes payload chunks into `<dest_path>.part` and atomically renames to `dest_path`
+/// once the transfer succeeds and stream is flushed. On any error or network disruption,
+/// any temporary `.part` file is deleted.
+pub async fn download_media_file(
+    client: &reqwest::Client,
+    url: &str,
+    dest_path: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = dest_path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|e| {
+            format!(
+                "Failed to create parent directory for {}: {}",
+                dest_path.display(),
+                e
+            )
+        })?;
+    }
+
+    let part_path = PathBuf::from(format!("{}.part", dest_path.to_string_lossy()));
+
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Request failed for {}: {}", url, e))?;
+
+    let status = response.status();
+    if status != reqwest::StatusCode::OK {
+        return Err(format!("Download failed for {}: HTTP {}", url, status));
+    }
+
+    let mut guard = PartFileGuard {
+        path: part_path.clone(),
+        completed: false,
+    };
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut file = tokio::fs::File::create(&part_path).await.map_err(|e| {
+            format!(
+                "Failed to create temporary file {}: {}",
+                part_path.display(),
+                e
+            )
+        })?;
+
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("Failed to read stream chunk from {}: {}", url, e))?
+        {
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| format!("Failed to write chunk to {}: {}", part_path.display(), e))?;
+        }
+
+        file.flush().await.map_err(|e| {
+            format!("Failed to flush stream to {}: {}", part_path.display(), e)
+        })?;
+    }
+
+    if dest_path.exists() {
+        tokio::fs::remove_file(dest_path).await.map_err(|e| {
+            format!(
+                "Failed to remove existing file {}: {}",
+                dest_path.display(),
+                e
+            )
+        })?;
+    }
+
+    tokio::fs::rename(&part_path, dest_path).await.map_err(|e| {
+        format!(
+            "Failed to rename {} to {}: {}",
+            part_path.display(),
+            dest_path.display(),
+            e
+        )
+    })?;
+
+    guard.completed = true;
+    Ok(())
+}
+
+/// Computes the target media paths for a game according to the frontend preset,
+/// platform, canonical title, region, and user MediaOptions.
+pub fn resolve_media_paths_for_game(
+    output_dir: &Path,
+    preset: FrontendPreset,
+    platform: Platform,
+    canonical_title: &str,
+    region: &str,
+    media_options: &MediaOptions,
+) -> Vec<PathBuf> {
+    let trimmed_title = canonical_title.trim();
+    let trimmed_region = region.trim();
+
+    let stem = if trimmed_region.is_empty()
+        || trimmed_title.ends_with(&format!("({})", trimmed_region))
+    {
+        trimmed_title.to_string()
+    } else {
+        format!("{} ({})", trimmed_title, trimmed_region)
+    };
+
+    let mut paths = Vec::new();
+
+    if media_options.download_boxart {
+        paths.push(resolve_preset_media_path(
+            output_dir,
+            preset,
+            platform,
+            &stem,
+            MediaType::BoxArt,
+        ));
+    }
+
+    if media_options.download_screenshots {
+        paths.push(resolve_preset_media_path(
+            output_dir,
+            preset,
+            platform,
+            &stem,
+            MediaType::Screenshots,
+        ));
+    }
+
+    if media_options.download_titles {
+        paths.push(resolve_preset_media_path(
+            output_dir,
+            preset,
+            platform,
+            &stem,
+            MediaType::TitleScreens,
+        ));
+    }
+
+    paths
+}
+

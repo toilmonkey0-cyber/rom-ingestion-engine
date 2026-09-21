@@ -20,6 +20,7 @@ async fn test_scan_and_plan_invalid_directory() {
         "out".to_string(),
         FrontendPreset::EsDe,
         None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -48,6 +49,7 @@ async fn test_scan_and_plan_success_with_fallback() {
         psx_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::EsDe,
+        None,
         None,
     )
     .await
@@ -395,3 +397,202 @@ async fn test_set_custom_chdman_path_valid_and_invalid() {
     let err_result = set_custom_chdman_path("C:/fake_path_does_not_exist/chdman.exe".to_string()).await;
     assert!(err_result.is_err());
 }
+
+#[tokio::test]
+async fn test_scan_and_plan_with_custom_media_options() {
+    let dir = tempdir().unwrap();
+    let psx_dir = dir.path().join("psx");
+    std::fs::create_dir_all(&psx_dir).unwrap();
+
+    let cue_path = psx_dir.join("Crash Bandicoot (USA).cue");
+    let bin_path = psx_dir.join("Crash Bandicoot (USA).bin");
+    File::create(&bin_path).unwrap().write_all(&[0u8; 1024]).unwrap();
+    File::create(&cue_path)
+        .unwrap()
+        .write_all(b"FILE \"Crash Bandicoot (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    let out_dir = dir.path().join("out");
+
+    let media_opts = MediaOptions {
+        download_boxart: true,
+        download_screenshots: true,
+        download_titles: false,
+    };
+
+    let plan = scan_and_plan(
+        psx_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        Some(media_opts),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(plan.games.len(), 1);
+    assert_eq!(plan.games[0].target_media_paths.len(), 2);
+    assert_eq!(
+        plan.games[0].target_media_paths[0],
+        out_dir.join("roms").join("psx").join("media").join("covers").join("Crash Bandicoot (USA).png")
+    );
+    assert_eq!(
+        plan.games[0].target_media_paths[1],
+        out_dir.join("roms").join("psx").join("media").join("screenshots").join("Crash Bandicoot (USA).png")
+    );
+}
+
+#[tokio::test]
+async fn test_resolve_game_artwork_command_unknown_platform() {
+    let res = resolve_game_artwork(
+        Platform::Unknown,
+        "Unknown Game".to_string(),
+        "USA".to_string(),
+    )
+    .await;
+    assert_eq!(res, Ok(None));
+}
+
+#[tokio::test]
+async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+
+            let mut buf = [0u8; 2048];
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+
+            if req.starts_with("GET /good_art.png") {
+                let img_data = [0x89, b'P', b'N', b'G', 99, 98, 97];
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: image/png\r\nConnection: close\r\n\r\n",
+                    img_data.len()
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.write_all(&img_data).await;
+            } else if req.starts_with("GET /bad_art.png") {
+                let resp = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                let _ = socket.write_all(resp.as_bytes()).await;
+            }
+            let _ = socket.flush().await;
+        }
+    });
+
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("in");
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let cue1 = in_dir.join("Game1.cue");
+    let bin1 = in_dir.join("Game1.bin");
+    File::create(&cue1)
+        .unwrap()
+        .write_all(b"FILE \"Game1.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+    File::create(&bin1).unwrap().write_all(&[0u8; 2048]).unwrap();
+
+    let cue2 = in_dir.join("Game2.cue");
+    let bin2 = in_dir.join("Game2.bin");
+    File::create(&cue2)
+        .unwrap()
+        .write_all(b"FILE \"Game2.bin\" BINARY\n  TRACK 01 MODE1/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+    File::create(&bin2).unwrap().write_all(&[0u8; 2048]).unwrap();
+
+    let target_chd1 = out_dir.join("roms").join("psx").join("Game1 (USA).chd");
+    let target_chd2 = out_dir.join("roms").join("psx").join("Game2 (USA).chd");
+
+    let media_path1 = out_dir.join("roms").join("psx").join("media").join("covers").join("Game1 (USA).png");
+    let media_path2 = out_dir.join("roms").join("psx").join("media").join("covers").join("Game2 (USA).png");
+
+    let game1 = PlannedGame {
+        id: "game-1".to_string(),
+        canonical_title: "Game1".to_string(),
+        platform: Platform::Psx,
+        region: "USA".to_string(),
+        is_multidisc: false,
+        discs: vec![PlannedDisc {
+            disc_number: 1,
+            source_descriptor: cue1,
+            target_chd_path: target_chd1.clone(),
+            status: TaskStatus::Pending,
+        }],
+        target_m3u_path: None,
+        confidence: 0.95,
+        source: ClassificationSource::RedumpCache,
+        enabled: true,
+        needs_review: false,
+        artwork_url: Some(format!("http://127.0.0.1:{}/good_art.png", port)),
+        target_media_paths: vec![media_path1.clone()],
+    };
+
+    let game2 = PlannedGame {
+        id: "game-2".to_string(),
+        canonical_title: "Game2".to_string(),
+        platform: Platform::Psx,
+        region: "USA".to_string(),
+        is_multidisc: false,
+        discs: vec![PlannedDisc {
+            disc_number: 1,
+            source_descriptor: cue2,
+            target_chd_path: target_chd2.clone(),
+            status: TaskStatus::Pending,
+        }],
+        target_m3u_path: None,
+        confidence: 0.95,
+        source: ClassificationSource::RedumpCache,
+        enabled: true,
+        needs_review: false,
+        artwork_url: Some(format!("http://127.0.0.1:{}/bad_art.png", port)),
+        target_media_paths: vec![media_path2.clone()],
+    };
+
+    let plan = IngestionPlan {
+        input_dir: in_dir,
+        output_dir: out_dir,
+        preset: FrontendPreset::EsDe,
+        games: vec![game1, game2],
+        total_source_bytes: 4096,
+        estimated_output_bytes: 2400,
+    };
+
+    let emitter = MockEventSink::new();
+    let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
+
+    let summary = execute_plan_internal(&emitter, plan, Some(chdman), Some(2))
+        .await
+        .unwrap();
+
+    // Both games must succeed, conversion should not fail due to bad artwork!
+    assert_eq!(summary.total_games, 2);
+    assert_eq!(summary.successful_games, 2);
+    assert_eq!(summary.failed_games, 0);
+
+    // Game 1 media file must exist with exact downloaded bytes
+    assert!(media_path1.exists(), "Game 1 artwork should be downloaded");
+    let downloaded_bytes = std::fs::read(&media_path1).unwrap();
+    assert_eq!(downloaded_bytes, vec![0x89, b'P', b'N', b'G', 99, 98, 97]);
+
+    // Game 2 media file should not exist, but conversion is verified
+    assert!(!media_path2.exists(), "Game 2 artwork should not exist due to 404");
+    assert!(target_chd2.exists(), "Game 2 CHD must still be created");
+
+    let status_events = emitter.status_events.lock().unwrap().clone();
+    let g2_events: Vec<_> = status_events.iter().filter(|e| e.game_id == "game-2").collect();
+    assert!(g2_events.iter().any(|e| e.status == TaskStatus::Verified));
+    assert!(!g2_events.iter().any(|e| e.status == TaskStatus::Failed));
+
+    server.abort();
+}
+

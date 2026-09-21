@@ -12,9 +12,9 @@ use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
     ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset, GameClassification,
-    GameStatusEvent, IngestionPlan, JobProgressEvent, TaskStatus,
+    GameStatusEvent, IngestionPlan, JobProgressEvent, MediaOptions, Platform, TaskStatus,
 };
-use crate::plan_builder::build_ingestion_plan;
+use crate::plan_builder::build_ingestion_plan_with_options;
 
 /// Abstraction for emitting progress and status events to the frontend or test listener.
 pub trait EventSink: Send + Sync {
@@ -117,6 +117,22 @@ fn classify_fallback(disc: &DiscFingerprint) -> GameClassification {
     }
 }
 
+/// Resolves the remote Libretro artwork CDN URL for a game, returning `Some(url)`
+/// if an online cover art match is found or `None` if missing.
+#[tauri::command]
+pub async fn resolve_game_artwork(
+    platform: Platform,
+    title: String,
+    region: String,
+) -> Result<Option<String>, String> {
+    let client = reqwest::Client::builder()
+        .user_agent("rom-ingest/0.1.0")
+        .build()
+        .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
+
+    Ok(crate::organizer::media::resolve_artwork_url(&client, platform, &title, &region).await)
+}
+
 /// Scans a source directory, classifies discovered disc images via Redump and TypeSafe Jev,
 /// and returns a structured dry-run `IngestionPlan`.
 #[tauri::command]
@@ -125,6 +141,7 @@ pub async fn scan_and_plan(
     output_dir: String,
     preset: FrontendPreset,
     api_key: Option<String>,
+    media_options: Option<MediaOptions>,
 ) -> Result<IngestionPlan, String> {
     let in_path = PathBuf::from(&input_dir);
     let out_path = PathBuf::from(&output_dir);
@@ -182,7 +199,14 @@ pub async fn scan_and_plan(
         classified_items.push((disc, classification));
     }
 
-    let plan = build_ingestion_plan(in_path, out_path, preset, classified_items);
+    let media_opts = media_options.unwrap_or_default();
+    let plan = build_ingestion_plan_with_options(
+        in_path,
+        out_path,
+        preset,
+        classified_items,
+        &media_opts,
+    );
     Ok(plan)
 }
 
@@ -209,6 +233,11 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
             .unwrap_or(4)
             .clamp(1, 8)
     });
+
+    let http_client = reqwest::Client::builder()
+        .user_agent("rom-ingest/0.1.0")
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrency));
     let chdman = Arc::new(chdman_override.unwrap_or_else(|| {
@@ -410,6 +439,36 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                 processed_discs += 1;
                 total_output_bytes += d.output_bytes;
                 all_source_files_to_trash.extend(d.source_files);
+            }
+
+            // Download media if target_media_paths is populated or artwork_url is available
+            if !game.target_media_paths.is_empty() {
+                let resolved_url = match &game.artwork_url {
+                    Some(url) => Some(url.clone()),
+                    None => {
+                        crate::organizer::media::resolve_artwork_url(
+                            &http_client,
+                            game.platform,
+                            &game.canonical_title,
+                            &game.region,
+                        )
+                        .await
+                    }
+                };
+
+                if let Some(ref url) = resolved_url {
+                    for media_dest in &game.target_media_paths {
+                        if let Err(e) =
+                            crate::organizer::media::download_media_file(&http_client, url, media_dest)
+                                .await
+                        {
+                            eprintln!(
+                                "Warning: Failed to download artwork for '{}': {}",
+                                game.canonical_title, e
+                            );
+                        }
+                    }
+                }
             }
 
             emitter.emit_game_status(&GameStatusEvent {

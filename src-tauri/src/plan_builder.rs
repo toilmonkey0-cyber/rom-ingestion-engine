@@ -4,8 +4,9 @@ use std::path::PathBuf;
 
 use crate::models::{
     ClassificationSource, DiscFingerprint, FrontendPreset, GameClassification, IngestionPlan,
-    Platform, PlannedDisc, PlannedGame, TaskStatus,
+    MediaOptions, Platform, PlannedDisc, PlannedGame, TaskStatus,
 };
+use crate::organizer::media::resolve_media_paths_for_game;
 use crate::organizer::presets::resolve_target_paths;
 
 /// Generates a clean, deterministic game ID for a planned game.
@@ -48,16 +49,34 @@ struct IntermediateDisc {
     source_descriptor: PathBuf,
 }
 
-/// Builds an `IngestionPlan` from classified disc fingerprints.
-///
-/// Multi-disc items of the same canonical title and platform are merged into
-/// single `PlannedGame` instances, sorted by disc number, with target `.chd` paths
-/// and optional `.m3u` playlists determined according to the target frontend preset.
+/// Builds an `IngestionPlan` from classified disc fingerprints with default media options (boxart enabled).
 pub fn build_ingestion_plan(
     input_dir: PathBuf,
     output_dir: PathBuf,
     preset: FrontendPreset,
     items: Vec<(DiscFingerprint, GameClassification)>,
+) -> IngestionPlan {
+    build_ingestion_plan_with_options(
+        input_dir,
+        output_dir,
+        preset,
+        items,
+        &MediaOptions::default(),
+    )
+}
+
+/// Builds an `IngestionPlan` from classified disc fingerprints with specific `MediaOptions`.
+///
+/// Multi-disc items of the same canonical title and platform are merged into
+/// single `PlannedGame` instances, sorted by disc number, with target `.chd` paths
+/// and optional `.m3u` playlists determined according to the target frontend preset.
+/// Target media paths (boxart, screenshots, titles) are populated according to `media_options`.
+pub fn build_ingestion_plan_with_options(
+    input_dir: PathBuf,
+    output_dir: PathBuf,
+    preset: FrontendPreset,
+    items: Vec<(DiscFingerprint, GameClassification)>,
+    media_options: &MediaOptions,
 ) -> IngestionPlan {
     // 1. Group items by (platform, canonical_title.to_lowercase())
     let mut groups: Vec<((Platform, String), Vec<(DiscFingerprint, GameClassification)>)> =
@@ -201,6 +220,15 @@ pub fn build_ingestion_plan(
             counter += 1;
         }
 
+        let target_media_paths = resolve_media_paths_for_game(
+            &output_dir,
+            preset,
+            platform,
+            &canonical_title,
+            &region,
+            media_options,
+        );
+
         planned_games.push(PlannedGame {
             id: game_id,
             canonical_title,
@@ -214,7 +242,7 @@ pub fn build_ingestion_plan(
             enabled: true,
             needs_review,
             artwork_url: None,
-            target_media_paths: Vec::new(),
+            target_media_paths,
         });
     }
 
