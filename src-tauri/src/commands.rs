@@ -12,8 +12,8 @@ use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
     ArtworkProgressEvent, ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset,
-    GameClassification, GameStatusEvent, IngestionPlan, JobProgressEvent, SkippedSource,
-    TaskStatus,
+    GameClassification, GameStatusEvent, IngestionPlan, JobProgressEvent, MigrationProgressEvent,
+    SkippedSource, TaskStatus,
 };
 use crate::organizer::presets::CustomPresetConfig;
 use crate::plan_builder::build_ingestion_plan;
@@ -25,6 +25,7 @@ pub trait EventSink: Send + Sync {
     fn emit_game_status(&self, _event: &GameStatusEvent) {}
     fn emit_download_progress(&self, _event: &DownloadProgressEvent) {}
     fn emit_artwork_progress(&self, _event: &ArtworkProgressEvent) {}
+    fn emit_migration_progress(&self, _event: &MigrationProgressEvent) {}
 }
 
 impl EventSink for () {}
@@ -45,6 +46,10 @@ impl EventSink for tauri::AppHandle {
     fn emit_artwork_progress(&self, event: &ArtworkProgressEvent) {
         let _ = self.emit("artwork-progress", event);
     }
+
+    fn emit_migration_progress(&self, event: &MigrationProgressEvent) {
+        let _ = self.emit("migration-progress", event);
+    }
 }
 
 /// Mock event sink for testing and headless verification.
@@ -54,6 +59,7 @@ pub struct MockEventSink {
     pub status_events: Arc<Mutex<Vec<GameStatusEvent>>>,
     pub download_events: Arc<Mutex<Vec<DownloadProgressEvent>>>,
     pub artwork_events: Arc<Mutex<Vec<ArtworkProgressEvent>>>,
+    pub migration_events: Arc<Mutex<Vec<MigrationProgressEvent>>>,
 }
 
 impl MockEventSink {
@@ -83,6 +89,12 @@ impl EventSink for MockEventSink {
 
     fn emit_artwork_progress(&self, event: &ArtworkProgressEvent) {
         if let Ok(mut lock) = self.artwork_events.lock() {
+            lock.push(event.clone());
+        }
+    }
+
+    fn emit_migration_progress(&self, event: &MigrationProgressEvent) {
+        if let Ok(mut lock) = self.migration_events.lock() {
             lock.push(event.clone());
         }
     }
@@ -680,5 +692,173 @@ pub async fn finish_library(
     download_artwork: bool,
 ) -> Result<crate::models::FinishLibrarySummary, String> {
     crate::metadata::finish_library_internal(&app_handle, &plan, download_artwork, None).await
+}
+
+/// Plans a library re-organization between frontend presets (dry run).
+#[tauri::command]
+pub fn plan_migration(
+    root: String,
+    source_preset: FrontendPreset,
+    target_preset: FrontendPreset,
+    custom_config: Option<CustomPresetConfig>,
+) -> Result<crate::migrator::MigrationPlan, String> {
+    crate::migrator::plan_migration(
+        Path::new(&root),
+        source_preset,
+        target_preset,
+        custom_config.as_ref(),
+    )
+}
+
+/// Executes a planned preset migration: moves files, rewrites playlists,
+/// regenerates gamelist metadata.
+#[tauri::command]
+pub fn execute_migration(
+    app_handle: tauri::AppHandle,
+    plan: crate::migrator::MigrationPlan,
+) -> Result<crate::migrator::MigrationSummary, String> {
+    crate::migrator::execute_migration(&app_handle, &plan)
+}
+
+/// Redump.org per-system DAT slugs serving verified ZIP downloads.
+const REDUMP_DAT_SLUGS: [&str; 5] = ["psx", "ss", "dc", "mcd", "pce"];
+
+/// Downloads Redump verification DATs (one per requested system) into
+/// `dest_dir` (or the app's managed `dats/` folder when omitted) and returns
+/// the extracted `.dat` paths, ready to feed into `scan_and_plan`.
+#[tauri::command]
+pub async fn download_redump_dats(
+    dest_dir: Option<String>,
+    slugs: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let dest = match dest_dir.filter(|d| !d.trim().is_empty()) {
+        Some(d) => PathBuf::from(d),
+        None => crate::chdman::downloader::get_managed_tools_dir()
+            .map_err(|e| e.to_string())?
+            .parent()
+            .map(|p| p.join("dats"))
+            .unwrap_or_else(|| PathBuf::from("dats")),
+    };
+    std::fs::create_dir_all(&dest).map_err(|e| format!("Cannot create '{}': {}", dest.display(), e))?;
+
+    let client = reqwest::Client::builder()
+        .user_agent("rom-ingest-dat-downloader/0.1.0")
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let mut written = Vec::new();
+    for slug in &slugs {
+        if !REDUMP_DAT_SLUGS.contains(&slug.as_str()) {
+            return Err(format!("Unknown Redump system slug: '{}'", slug));
+        }
+        let url = format!("http://redump.org/datfile/{}/", slug);
+        let bytes = client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("Request for '{}' failed: {}", slug, e))?
+            .error_for_status()
+            .map_err(|e| format!("redump.org returned an error for '{}': {}", slug, e))?
+            .bytes()
+            .await
+            .map_err(|e| format!("Download of '{}' failed: {}", slug, e))?;
+
+        if bytes.len() < 4 || &bytes[..2] != b"PK" {
+            return Err(format!(
+                "'{}' did not return a ZIP archive (got {} bytes) — redump.org may be regenerating the DAT; retry shortly",
+                slug,
+                bytes.len()
+            ));
+        }
+
+        let cursor = std::io::Cursor::new(&bytes[..]);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| format!("Bad ZIP for '{}': {}", slug, e))?;
+        let mut extracted = false;
+        for i in 0..archive.len() {
+            let mut entry = archive.by_index(i).map_err(|e| e.to_string())?;
+            let name = entry.name().to_string();
+            if name.to_ascii_lowercase().ends_with(".dat") {
+                let target = dest.join(format!("redump_{}.dat", slug));
+                let mut out = std::fs::File::create(&target)
+                    .map_err(|e| format!("Cannot write '{}': {}", target.display(), e))?;
+                std::io::copy(&mut entry, &mut out)
+                    .map_err(|e| format!("Extracting '{}' failed: {}", name, e))?;
+                written.push(target.to_string_lossy().to_string());
+                extracted = true;
+                break;
+            }
+        }
+        if !extracted {
+            return Err(format!("ZIP for '{}' contained no .dat file", slug));
+        }
+    }
+
+    Ok(written)
+}
+
+/// Reads a small image file (box art) as a base64 data URL for the UI.
+/// Only `.png`/`.jpg` files under 5 MB are served.
+#[tauri::command]
+pub fn read_image_file(path: String) -> Result<Option<String>, String> {
+    let p = PathBuf::from(&path);
+    let ext = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        _ => return Ok(None),
+    };
+    let meta = std::fs::metadata(&p).map_err(|e| format!("Cannot stat '{}': {}", path, e))?;
+    if !meta.is_file() {
+        return Ok(None);
+    }
+    if meta.len() > 5 * 1024 * 1024 {
+        return Err(format!("Image too large to preview ({} bytes)", meta.len()));
+    }
+    let bytes = std::fs::read(&p).map_err(|e| format!("Cannot read '{}': {}", path, e))?;
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(Some(format!("data:{};base64,{}", mime, encoded)))
+}
+
+/// Starts or stops the "Incoming" watch folder: while enabled, new dumps
+/// dropped into the input folder are auto-ingested (scan → convert → verify)
+/// after a short quiet period. Sources are never modified.
+#[tauri::command]
+pub fn configure_watch_folder(
+    app_handle: tauri::AppHandle,
+    input_dir: String,
+    output_dir: String,
+    preset: FrontendPreset,
+    custom_config: Option<CustomPresetConfig>,
+    enabled: bool,
+) -> Result<String, String> {
+    if !enabled {
+        crate::watch::stop_watch();
+        return Ok("stopped".to_string());
+    }
+
+    let in_path = PathBuf::from(&input_dir);
+    let out_path = PathBuf::from(&output_dir);
+    if !in_path.is_dir() {
+        return Err(format!("Watch folder is not a directory: {}", input_dir));
+    }
+    if out_path.exists() && !out_path.is_dir() {
+        return Err(format!("Output path exists and is not a directory: {}", output_dir));
+    }
+    let canon_in = std::fs::canonicalize(&in_path).unwrap_or_else(|_| in_path.clone());
+    let canon_out = std::fs::canonicalize(&out_path).unwrap_or_else(|_| out_path.clone());
+    if canon_in == canon_out {
+        return Err("Output directory must differ from the watched folder".to_string());
+    }
+    std::fs::create_dir_all(&out_path)
+        .map_err(|e| format!("Cannot create output directory '{}': {}", output_dir, e))?;
+
+    crate::watch::start_watch(app_handle, in_path, out_path, preset, custom_config)?;
+    Ok("watching".to_string())
 }
 

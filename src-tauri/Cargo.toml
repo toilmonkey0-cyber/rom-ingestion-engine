@@ -23,6 +23,8 @@ zip = { version = "2.2", default-features = false, features = ["deflate"] }
 flate2 = "1.0"
 tar = "0.4"
 quick-xml = "0.36"
+base64 = "0.22"
+notify = "8"
 
 [dev-dependencies]
 tempfile = "3"

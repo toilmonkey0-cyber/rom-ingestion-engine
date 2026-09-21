@@ -57,6 +57,7 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
         artwork_downloaded: 0,
         artwork_skipped: 0,
         artwork_failed: 0,
+        artwork_paths: Vec::new(),
     };
 
     // 1. Collect enabled games with a display file, deduplicated by art
@@ -94,6 +95,7 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
         }
         if dest.exists() {
             summary.artwork_skipped += 1;
+            summary.artwork_paths.push(dest.to_string_lossy().to_string());
             emitter.emit_artwork_progress(&ArtworkProgressEvent {
                 game_id: String::new(),
                 title: title.clone(),
@@ -136,6 +138,7 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
                 std::fs::write(dest, &bytes)
                     .map_err(|e| format!("Cannot write artwork '{}': {}", dest.display(), e))?;
                 summary.artwork_downloaded += 1;
+                summary.artwork_paths.push(dest.to_string_lossy().to_string());
                 emitter.emit_artwork_progress(&ArtworkProgressEvent {
                     game_id: String::new(),
                     title: title.clone(),
@@ -182,6 +185,7 @@ pub async fn finish_library_internal<E: EventSink + Clone + Send + Sync + 'stati
                 path: format!("./{}", file_name),
                 name: title.clone(),
                 image,
+                desc: None,
             });
         }
 

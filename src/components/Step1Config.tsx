@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   FolderInput,
   FolderOutput,
@@ -9,10 +9,13 @@ import {
   Info,
   CheckCircle,
   AlertCircle,
+  Radar,
 } from 'lucide-react';
 import { FrontendPreset } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
 import { ChdmanStatusBanner } from './ChdmanStatusBanner';
+import { MigrationPanel } from './MigrationPanel';
+import { REDUMP_DAT_SLUGS, downloadRedumpDatsApi } from '../services/tauri';
 
 interface PresetOption {
   id: FrontendPreset;
@@ -74,6 +77,9 @@ export const Step1Config: React.FC = () => {
     customPresetConfig,
     apiKey,
     redumpDats,
+    isWatching,
+    watchStatus,
+    configureWatch,
     isScanning,
     error,
     chdmanStatus,
@@ -97,6 +103,29 @@ export const Step1Config: React.FC = () => {
   useEffect(() => {
     checkChdmanStatus();
   }, [checkChdmanStatus]);
+
+  const [selectedDats, setSelectedDats] = useState<string[]>(
+    REDUMP_DAT_SLUGS.map((d) => d.slug)
+  );
+  const [isDownloadingDats, setIsDownloadingDats] = useState(false);
+  const [datMessage, setDatMessage] = useState<string | null>(null);
+
+  const handleDownloadDats = async () => {
+    if (selectedDats.length === 0 || isDownloadingDats) return;
+    setIsDownloadingDats(true);
+    setDatMessage(null);
+    try {
+      const paths = await downloadRedumpDatsApi('', selectedDats, (m) => setDatMessage(m));
+      const existing = redumpDats.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+      const merged = Array.from(new Set([...existing, ...paths]));
+      setRedumpDats(merged.join(', '));
+      setDatMessage(`Downloaded ${paths.length} DAT file(s) and added them to the list above.`);
+    } catch (err: unknown) {
+      setDatMessage(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsDownloadingDats(false);
+    }
+  };
 
   const handleBrowseChdman = () => {
     const defaultVal = chdmanStatus?.path || '';
@@ -302,6 +331,9 @@ export const Step1Config: React.FC = () => {
         )}
       </div>
 
+      {/* Preset Migration tool */}
+      <MigrationPanel />
+
       {/* Advanced / Optional AI Key */}
       <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
         <div className="flex items-center justify-between">
@@ -355,13 +387,98 @@ export const Step1Config: React.FC = () => {
           <div className="flex items-start space-x-2 text-xs text-slate-400">
             <Info className="w-3.5 h-3.5 mt-0.5 text-slate-500 shrink-0" />
             <span>
-              Comma-separated paths to Redump <code>.dat</code> files (downloadable from redump.org). With DATs
-              loaded, discs whose track-1 SHA-1 matches the reference dump are marked
-              <strong className="text-emerald-400"> Redump-verified</strong> — bad rips and truncated dumps are
-              flagged before any compression time is spent.
+              Comma-separated paths to Redump <code>.dat</code> files. With DATs loaded, discs whose
+              track-1 SHA-1 matches the reference dump are marked
+              <strong className="text-emerald-400"> Redump-verified</strong> — bad rips and truncated
+              dumps are flagged before any compression time is spent.
             </span>
           </div>
+
+          <div className="pt-2 border-t border-slate-800/60 space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {REDUMP_DAT_SLUGS.map((d) => {
+                const active = selectedDats.includes(d.slug);
+                return (
+                  <button
+                    key={d.slug}
+                    type="button"
+                    onClick={() =>
+                      setSelectedDats((cur) =>
+                        cur.includes(d.slug) ? cur.filter((s) => s !== d.slug) : [...cur, d.slug]
+                      )
+                    }
+                    className={`text-[11px] px-2.5 py-1 rounded-full border font-semibold transition-all ${
+                      active
+                        ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/40'
+                        : 'bg-slate-950/60 text-slate-400 border-slate-700/60 hover:text-slate-300'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="flex items-center space-x-3">
+              <button
+                type="button"
+                onClick={handleDownloadDats}
+                disabled={isDownloadingDats || selectedDats.length === 0}
+                className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center space-x-2 transition-all ${
+                  isDownloadingDats || selectedDats.length === 0
+                    ? 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
+                }`}
+              >
+                {isDownloadingDats ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                    <span>Downloading DATs…</span>
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle className="w-3.5 h-3.5" />
+                    <span>Download Selected DATs from redump.org</span>
+                  </>
+                )}
+              </button>
+              {datMessage && <span className="text-[11px] text-slate-400">{datMessage}</span>}
+            </div>
+          </div>
         </div>
+      </div>
+
+      {/* Watch folder (hands-free auto-ingest) */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center space-x-2">
+              <Radar className="w-4 h-4 text-cyan-400" />
+              <h3 className="text-base font-semibold text-white">Incoming Watch Folder</h3>
+            </div>
+            <p className="text-xs text-slate-400 mt-1 max-w-xl">
+              While the app is open, new dumps dropped into the source folder are detected and
+              auto-ingested (convert + verify) into the target folder after a short quiet period.
+              Sources are never modified — trash decisions stay yours.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => configureWatch(!isWatching)}
+            className={`shrink-0 px-5 py-2.5 rounded-xl text-xs font-bold border transition-all ${
+              isWatching
+                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 hover:bg-cyan-500/30'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700'
+            }`}
+          >
+            {isWatching ? 'Stop Watching' : 'Start Watching'}
+          </button>
+        </div>
+        {isWatching && watchStatus && (
+          <div className="mt-3 flex items-center space-x-2 text-xs text-cyan-300/90 font-mono">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+            <span className="truncate">{watchStatus.message}</span>
+          </div>
+        )}
       </div>
 
       {/* Action Button */}

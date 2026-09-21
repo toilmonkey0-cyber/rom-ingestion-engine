@@ -10,6 +10,7 @@ import {
   CustomPresetConfig,
   FinishLibrarySummary,
   ArtworkProgressEvent,
+  WatchStatusEvent,
 } from '../types/plan';
 import {
   scanAndPlanApi,
@@ -19,6 +20,8 @@ import {
   downloadChdmanApi,
   setCustomChdmanPathApi,
   finishLibraryApi,
+  configureWatchFolderApi,
+  listenWatchStatusApi,
   DEFAULT_CUSTOM_PRESET,
 } from '../services/tauri';
 
@@ -42,6 +45,10 @@ export interface IngestionState {
   summary: ExecutionSummary | null;
   error: string | null;
 
+  // Watch folder (auto-ingest)
+  isWatching: boolean;
+  watchStatus: WatchStatusEvent | null;
+
   // Finish Line (artwork + gamelist metadata)
   isFinishing: boolean;
   finishProgress: { completed: number; total: number; title: string } | null;
@@ -63,6 +70,7 @@ export interface IngestionState {
   setCustomPresetFolder: (field: keyof CustomPresetConfig, value: string) => void;
   setApiKey: (key: string) => void;
   setRedumpDats: (dats: string) => void;
+  configureWatch: (enabled: boolean) => Promise<void>;
   setError: (error: string | null) => void;
   updateGameTitle: (gameId: string, newTitle: string) => void;
   toggleGameEnabled: (gameId: string) => void;
@@ -94,6 +102,8 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   activeLogs: [],
   summary: null,
   error: null,
+  isWatching: false,
+  watchStatus: null,
   isFinishing: false,
   finishProgress: null,
   finishResult: null,
@@ -114,6 +124,35 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     })),
   setApiKey: (apiKey) => set({ apiKey }),
   setRedumpDats: (redumpDats) => set({ redumpDats }),
+
+  configureWatch: async (enabled: boolean) => {
+    const { inputDir, outputDir, preset, customPresetConfig } = get();
+    if (enabled && (!inputDir.trim() || !outputDir.trim())) {
+      set({ error: 'Set the source and target folders before enabling the watch folder.' });
+      return;
+    }
+    try {
+      const status = await configureWatchFolderApi(
+        inputDir,
+        outputDir,
+        preset,
+        preset === 'custom' ? customPresetConfig : null,
+        enabled
+      );
+      set({
+        isWatching: status === 'watching',
+        watchStatus: enabled
+          ? { stage: 'watching', message: 'Watching for new dumps...' }
+          : null,
+        error: null,
+      });
+      if (enabled) {
+        listenWatchStatusApi((event) => set({ watchStatus: event })).catch(() => {});
+      }
+    } catch (err: unknown) {
+      set({ error: err instanceof Error ? err.message : String(err), isWatching: false });
+    }
+  },
   setError: (error) => set({ error }),
 
   updateGameTitle: (gameId, newTitle) => {
@@ -347,6 +386,8 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
       activeLogs: [],
       summary: null,
       error: null,
+      isWatching: false,
+      watchStatus: null,
       isFinishing: false,
       finishProgress: null,
       finishResult: null,

@@ -12,10 +12,10 @@ describe('Step1Config', () => {
   it('renders presets with Anbernic Stock OS, OnionOS, and folder inputs', () => {
     render(<Step1Config />);
 
-    expect(screen.getByText('Anbernic Stock OS')).toBeDefined();
-    expect(screen.getByText('OnionOS / GarlicOS')).toBeDefined();
+    expect(screen.getAllByText('Anbernic Stock OS').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('OnionOS / GarlicOS').length).toBeGreaterThan(0);
     expect(screen.getByText('ES-DE (EmulationStation)')).toBeDefined();
-    expect(screen.getByText('Batocera / Knulli')).toBeDefined();
+    expect(screen.getAllByText('Batocera / Knulli').length).toBeGreaterThan(0);
     expect(screen.getByPlaceholderText(/e\.g\. D:\/Emulation\/Dumps/i)).toBeDefined();
   });
 
@@ -31,7 +31,11 @@ describe('Step1Config', () => {
   it('switches preset when clicking a preset card', () => {
     render(<Step1Config />);
 
-    const onionCard = screen.getByText('OnionOS / GarlicOS');
+    // The preset name also appears in the migration panel's select — click
+    // the card instance specifically.
+    const onionCard = screen
+      .getAllByText('OnionOS / GarlicOS')
+      .find((el) => el.closest('[role="button"]')) as HTMLElement;
     fireEvent.click(onionCard);
 
     expect(useIngestionStore.getState().preset).toBe('onionos');

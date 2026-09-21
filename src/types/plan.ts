@@ -108,4 +108,45 @@ export interface FinishLibrarySummary {
   artwork_downloaded: number;
   artwork_skipped: number;
   artwork_failed: number;
+  artwork_paths?: string[];
+}
+
+export type MigrationItemKind = 'chd' | 'playlist' | 'artwork' | 'stale_gamelist';
+
+export interface MigrationItem {
+  kind: MigrationItemKind;
+  source: string;
+  target: string;
+}
+
+export interface PlaylistRewrite {
+  target: string;
+  entries: string[];
+}
+
+export interface MigrationPlan {
+  root: string;
+  source_preset: FrontendPreset;
+  target_preset: FrontendPreset;
+  games: number;
+  items: MigrationItem[];
+  playlist_rewrites: PlaylistRewrite[];
+}
+
+export interface MigrationSummary {
+  files_moved: number;
+  playlists_rewritten: number;
+  gamelists_written: number;
+  skipped_existing: string[];
+}
+
+export interface WatchStatusEvent {
+  stage: 'watching' | 'ingesting' | 'done' | 'error' | 'stopped';
+  message: string;
+}
+
+export interface MigrationProgressEvent {
+  message: string;
+  completed: number;
+  total: number;
 }

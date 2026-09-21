@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ShieldCheck,
   HardDrive,
@@ -15,6 +15,7 @@ import {
   Palette,
 } from 'lucide-react';
 import { useIngestionStore } from '../store/useIngestionStore';
+import { readImageFileApi } from '../services/tauri';
 
 function formatBytes(bytes: number): string {
   if (!bytes || bytes === 0) return '0 B';
@@ -38,6 +39,33 @@ export const Step4Summary: React.FC = () => {
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [trashError, setTrashError] = useState<string | null>(null);
+  const [artPreviews, setArtPreviews] = useState<Record<string, string>>({});
+
+  // Lazily load thumbnails for downloaded artwork once the Finish Line
+  // result carries paths.
+  useEffect(() => {
+    const paths = finishResult?.artwork_paths ?? [];
+    if (paths.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const path of paths.slice(0, 24)) {
+        if (cancelled) return;
+        if (artPreviews[path]) continue;
+        try {
+          const dataUrl = await readImageFileApi(path);
+          if (dataUrl && !cancelled) {
+            setArtPreviews((prev) => ({ ...prev, [path]: dataUrl }));
+          }
+        } catch {
+          // preview is best-effort; ignore unreadable art
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [finishResult]);
 
   const totalSource = summary?.total_source_bytes ?? 0;
   const totalOutput = summary?.total_output_bytes ?? 0;
@@ -315,6 +343,25 @@ export const Step4Summary: React.FC = () => {
               )}
             </div>
           </div>
+
+          {Object.keys(artPreviews).length > 0 && (
+            <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 pt-1">
+              {Object.entries(artPreviews).map(([path, dataUrl]) => (
+                <div
+                  key={path}
+                  className="aspect-[3/4] rounded-lg overflow-hidden border border-slate-700/60 bg-slate-950/60"
+                  title={path}
+                >
+                  <img
+                    src={dataUrl}
+                    alt=""
+                    className="w-full h-full object-cover"
+                    loading="lazy"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
 
           {isFinishing && finishProgress && (
             <div className="space-y-1.5">

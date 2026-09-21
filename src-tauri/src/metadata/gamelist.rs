@@ -11,6 +11,8 @@ pub struct GamelistEntry {
     pub name: String,
     /// Optional relative box-art path (e.g. `./media/images/Game (USA).png`).
     pub image: Option<String>,
+    /// Optional description text shown in the frontend detail view.
+    pub desc: Option<String>,
 }
 
 /// Escapes a string for XML text content / double-quoted attribute values.
@@ -38,6 +40,11 @@ pub fn generate_gamelist_xml(entries: &[GamelistEntry]) -> String {
         out.push_str(&format!("    <name>{}</name>\n", xml_escape(&e.name)));
         if let Some(ref image) = e.image {
             out.push_str(&format!("    <image>{}</image>\n", xml_escape(image)));
+        }
+        if let Some(ref desc) = e.desc {
+            if !desc.trim().is_empty() {
+                out.push_str(&format!("    <desc>{}</desc>\n", xml_escape(desc)));
+            }
         }
         out.push_str("  </game>\n");
     }
@@ -67,11 +74,13 @@ mod tests {
                 path: "./R-Type & Ryu (USA).m3u".into(),
                 name: "R-Type <Final> \"Deluxe\"".into(),
                 image: Some("./media/images/R-Type & Ryu (USA).png".into()),
+                desc: None,
             },
             GamelistEntry {
                 path: "./Game.chd".into(),
                 name: "Game".into(),
                 image: None,
+                desc: Some("A classic <adventure> & more".into()),
             },
         ];
         let xml = generate_gamelist_xml(&entries);
@@ -83,13 +92,18 @@ mod tests {
         assert!(xml.contains("<name>Game</name>"));
         let game_section = xml.split("<name>Game</name>").nth(1).unwrap();
         assert!(!game_section.contains("<image>"));
+        assert!(xml.contains("<desc>A classic &lt;adventure&gt; &amp; more</desc>"));
     }
 
     #[test]
     fn test_write_gamelist_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nested").join("gamelist.xml");
-        write_gamelist(&path, &[GamelistEntry { path: "./a.chd".into(), name: "A".into(), image: None }]).unwrap();
+        write_gamelist(
+            &path,
+            &[GamelistEntry { path: "./a.chd".into(), name: "A".into(), image: None, desc: None }],
+        )
+        .unwrap();
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(content.contains("./a.chd"));
     }

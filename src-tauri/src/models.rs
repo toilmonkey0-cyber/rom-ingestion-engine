@@ -156,10 +156,22 @@ pub struct ArtworkProgressEvent {
 }
 
 /// Outcome of the Finish Line phase (artwork + playlist metadata).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FinishLibrarySummary {
     pub gamelists_written: usize,
     pub artwork_downloaded: usize,
     pub artwork_skipped: usize,
     pub artwork_failed: usize,
+    /// Paths of artwork present on disk after the phase (downloaded or
+    /// previously existing), for UI preview.
+    #[serde(default)]
+    pub artwork_paths: Vec<String>,
+}
+
+/// Emitted per file while a preset migration is being executed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationProgressEvent {
+    pub message: String,
+    pub completed: usize,
+    pub total: usize,
 }

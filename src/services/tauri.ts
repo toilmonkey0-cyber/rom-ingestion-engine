@@ -9,6 +9,11 @@ import {
   CustomPresetConfig,
   FinishLibrarySummary,
   ArtworkProgressEvent,
+  MigrationPlan,
+  MigrationSummary,
+  MigrationProgressEvent,
+  WatchStatusEvent,
+  Platform,
 } from '../types/plan';
 
 export const DEFAULT_CUSTOM_PRESET: CustomPresetConfig = {
@@ -361,4 +366,120 @@ export async function finishLibraryApi(
     artwork_skipped: 0,
     artwork_failed: games.length > 0 ? 1 : 0,
   };
+}
+
+export async function planMigrationApi(
+  root: string,
+  sourcePreset: FrontendPreset,
+  targetPreset: FrontendPreset,
+  customConfig?: CustomPresetConfig | null
+): Promise<MigrationPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<MigrationPlan>('plan_migration', {
+      root,
+      sourcePreset,
+      targetPreset,
+      customConfig: targetPreset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+    });
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  return {
+    root,
+    source_preset: sourcePreset,
+    target_preset: targetPreset,
+    games: 2,
+    items: [
+      { kind: 'chd', source: `${root}/Roms/PS/.discs/Game (Disc 1).chd`, target: `${root}/roms/psx/.discs/Game (Disc 1).chd` },
+      { kind: 'playlist', source: `${root}/Roms/PS/Game.m3u`, target: `${root}/roms/psx/Game.m3u` },
+    ],
+    playlist_rewrites: [],
+  };
+}
+
+export async function executeMigrationApi(
+  plan: MigrationPlan,
+  onProgress?: (event: MigrationProgressEvent) => void
+): Promise<MigrationSummary> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+    let unlisten: (() => void) | undefined;
+    if (onProgress) {
+      unlisten = await listen<MigrationProgressEvent>('migration-progress', (e) => {
+        onProgress(e.payload);
+      });
+    }
+    try {
+      return await invoke<MigrationSummary>('execute_migration', { plan });
+    } finally {
+      if (unlisten) unlisten();
+    }
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  return { files_moved: plan.items.length, playlists_rewritten: plan.playlist_rewrites.length, gamelists_written: 1, skipped_existing: [] };
+}
+
+/** redump.org system slugs for one-click DAT downloads (verified live). */
+export const REDUMP_DAT_SLUGS: { platform: Platform; label: string; slug: string }[] = [
+  { platform: 'psx', label: 'Sony PlayStation', slug: 'psx' },
+  { platform: 'saturn', label: 'Sega Saturn', slug: 'ss' },
+  { platform: 'dreamcast', label: 'Sega Dreamcast', slug: 'dc' },
+  { platform: 'segacd', label: 'Sega CD / Mega-CD', slug: 'mcd' },
+  { platform: 'pcecd', label: 'PC Engine CD / TurboGrafx-CD', slug: 'pce' },
+];
+
+export async function downloadRedumpDatsApi(
+  destDir: string,
+  slugs: string[],
+  onProgress?: (message: string) => void
+): Promise<string[]> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string[]>('download_redump_dats', { destDir, slugs });
+  }
+  for (const slug of slugs) {
+    onProgress?.(`Fetching ${slug}.dat (simulated)...`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return slugs.map((s) => `${destDir}/Redump_${s}.dat`);
+}
+
+export async function readImageFileApi(path: string): Promise<string | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string | null>('read_image_file', { path });
+  }
+  return null;
+}
+
+export async function configureWatchFolderApi(
+  inputDir: string,
+  outputDir: string,
+  preset: FrontendPreset,
+  customConfig: CustomPresetConfig | null,
+  enabled: boolean
+): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string>('configure_watch_folder', {
+      inputDir,
+      outputDir,
+      preset,
+      customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+      enabled,
+    });
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  return enabled ? 'watching' : 'stopped';
+}
+
+export async function listenWatchStatusApi(
+  onStatus: (event: WatchStatusEvent) => void
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  const unlisten = await listen<WatchStatusEvent>('watch-status', (e) => {
+    onStatus(e.payload);
+  });
+  return unlisten;
 }

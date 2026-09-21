@@ -319,3 +319,54 @@ fn test_parse_platform_loose_from_dat_headers() {
     assert_eq!(parse_platform_loose("Sega Dreamcast"), Some(Platform::Dreamcast));
     assert_eq!(parse_platform_loose("Nintendo - Game Boy"), None);
 }
+
+/// Live end-to-end DAT verification: downloads the real Redump PSX DAT from
+/// redump.org and parses it. Run with:
+/// `cargo test --test redump_test -- --ignored`
+#[tokio::test]
+#[ignore = "performs a real network download"]
+async fn live_download_and_parse_real_redump_psx_dat() {
+    let client = reqwest::Client::builder()
+        .user_agent("rom-ingest-dat-verify/0.1.0")
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .unwrap();
+    let bytes = client
+        .get("http://redump.org/datfile/psx/")
+        .send()
+        .await
+        .expect("request redump")
+        .error_for_status()
+        .expect("redump status")
+        .bytes()
+        .await
+        .expect("body");
+
+    let cursor = std::io::Cursor::new(&bytes[..]);
+    let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+    let mut dat_bytes: Vec<u8> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        if entry.name().to_ascii_lowercase().ends_with(".dat") {
+            std::io::Read::read_to_end(&mut entry, &mut dat_bytes).unwrap();
+            break;
+        }
+    }
+    assert!(!dat_bytes.is_empty(), "zip contained a .dat");
+
+    let mut db = RedumpDatabase::new();
+    let count = db
+        .load_dat_xml(std::io::Cursor::new(&dat_bytes[..]))
+        .expect("parse real DAT");
+    // The PSX datfile currently lists ~10,900 games.
+    assert!(count > 9_000, "unexpectedly few entries parsed: {}", count);
+
+    // The very first sha1 in the DAT text must be present and classified.
+    let text = String::from_utf8_lossy(&dat_bytes).to_string();
+    let start = text.find("sha1=\"").expect("dat has sha1 attrs") + 6;
+    let hash: String = text[start..].chars().take(40).collect();
+    let sample = db.lookup_sha1(&hash).expect("first DAT hash resolves");
+    assert_eq!(sample.platform, Platform::Psx);
+    assert!(!sample.canonical_title.is_empty());
+    assert_eq!(sample.source, ClassificationSource::RedumpCache);
+}
