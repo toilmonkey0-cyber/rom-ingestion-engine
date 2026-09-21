@@ -1,0 +1,95 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    Psx,
+    Saturn,
+    Dreamcast,
+    SegaCd,
+    PceCd,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscFingerprint {
+    pub primary_file: PathBuf,
+    pub binary_tracks: Vec<PathBuf>,
+    pub detected_platform: Platform,
+    pub calculated_sha1: Option<String>,
+    pub total_bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClassificationSource {
+    RedumpCache,
+    JevAI,
+    Fallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameClassification {
+    pub canonical_title: String,
+    pub platform: Platform,
+    pub region: String,
+    pub is_multidisc: bool,
+    pub disc_number: Option<u8>,
+    pub total_discs: Option<u8>,
+    pub confidence: f32,
+    pub source: ClassificationSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FrontendPreset {
+    EsDe,
+    OnionOs,
+    AnbernicStock,
+    Batocera,
+    Custom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskStatus {
+    Pending,
+    Compressing,
+    Verified,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlannedDisc {
+    pub disc_number: u8,
+    pub source_descriptor: PathBuf,
+    pub target_chd_path: PathBuf,
+    pub status: TaskStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PlannedGame {
+    pub id: String,
+    pub canonical_title: String,
+    pub platform: Platform,
+    pub region: String,
+    pub is_multidisc: bool,
+    pub discs: Vec<PlannedDisc>,
+    pub target_m3u_path: Option<PathBuf>,
+    pub confidence: f32,
+    pub source: ClassificationSource,
+    pub enabled: bool,
+    pub needs_review: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IngestionPlan {
+    pub input_dir: PathBuf,
+    pub output_dir: PathBuf,
+    pub preset: FrontendPreset,
+    pub games: Vec<PlannedGame>,
+    pub total_source_bytes: u64,
+    pub estimated_output_bytes: u64,
+}
