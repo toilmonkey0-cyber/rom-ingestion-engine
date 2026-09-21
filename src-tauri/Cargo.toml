@@ -2,6 +2,7 @@
 name = "rom-ingest-core"
 version = "0.1.0"
 edition = "2021"
+default-run = "rom-ingest-app"
 
 [lib]
 name = "rom_ingest_core"
@@ -34,4 +35,4 @@ name = "mock_chdman"
 path = "tests/bin/mock_chdman.rs"
 
 [build-dependencies]
-tauri-build = { version = "2" }
+tauri-build = { version = "2", features = [] }
