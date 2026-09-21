@@ -520,3 +520,35 @@ fn real_build_esde_library_from_chds() {
     print_tree(&output, 0);
 }
 
+
+/// User-authorized removal of the PSP "3rd Birthday" ISO (backed up on PC)
+/// to free space for playlist repairs — through the app's confirmed
+/// permanent-deletion path on the no-Recycle-Bin card.
+#[test]
+#[ignore = "requires the SD card + psp backup staged"]
+fn real_remove_psp_third_birthday_via_app() {
+    let iso = PathBuf::from("D:/Roms/PSP/Parasite Evethe 3rd Birthday.iso");
+    let backup = staging().join("psp_backup").join("Parasite Evethe 3rd Birthday.iso");
+    assert!(backup.is_file(), "PC backup must exist before removal");
+
+    // Unconfirmed must refuse (FAT32 card, no Recycle Bin).
+    let err = rom_ingest_core::commands::trash_source_files(
+        vec![iso.to_string_lossy().to_string()],
+        None,
+        None,
+    )
+    .expect_err("refuses without explicit permanent confirmation");
+    assert!(err.contains("NO RECYCLE BIN"), "got: {}", err);
+    assert!(iso.exists(), "refusal left the ISO in place");
+
+    // User-authorized permanent removal.
+    let count = rom_ingest_core::commands::trash_source_files(
+        vec![iso.to_string_lossy().to_string()],
+        None,
+        Some(true),
+    )
+    .expect("confirmed removal");
+    assert_eq!(count, 1);
+    assert!(!iso.exists(), "ISO gone from card");
+    println!("freed: 3rd Birthday ISO removed (backed up on PC)");
+}
