@@ -93,3 +93,30 @@ pub struct IngestionPlan {
     pub total_source_bytes: u64,
     pub estimated_output_bytes: u64,
 }
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JobProgressEvent {
+    pub game_id: String,
+    pub disc_number: u8,
+    pub progress: f32,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GameStatusEvent {
+    pub game_id: String,
+    pub status: TaskStatus,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionSummary {
+    pub total_games: usize,
+    pub successful_games: usize,
+    pub failed_games: usize,
+    pub total_discs: usize,
+    pub processed_discs: usize,
+    pub source_files_to_trash: Vec<String>,
+    pub total_source_bytes: u64,
+    pub total_output_bytes: u64,
+}
