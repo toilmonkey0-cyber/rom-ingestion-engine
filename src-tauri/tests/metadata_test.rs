@@ -233,3 +233,60 @@ async fn test_finish_library_without_download_only_writes_gamelists() {
         .join("images")
         .exists());
 }
+
+#[tokio::test]
+async fn test_finish_library_onion_artwork_goes_to_imgs_folder() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let dir = tempdir().unwrap();
+    let plan = make_plan(dir.path(), FrontendPreset::OnionOs);
+    let art = art_bytes();
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let art_for_server = art.clone();
+    let handle = tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            let mut req = [0u8; 2048];
+            let n = socket.read(&mut req).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&req[..n]).to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or_default().to_string();
+            let (status, body): (&str, Vec<u8>) = if path.contains("Final%20Fantasy%20VII") {
+                ("200 OK", art_for_server.clone())
+            } else {
+                ("404 Not Found", Vec::new())
+            };
+            let response = format!(
+                "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                status,
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+            socket.write_all(&body).await.unwrap();
+            socket.flush().await.unwrap();
+        }
+    });
+
+    let base = format!("http://127.0.0.1:{}", port);
+    let emitter = MockEventSink::new();
+    let summary = finish_library_internal(&emitter, &plan, true, Some(&base))
+        .await
+        .expect("finish");
+    handle.abort();
+
+    // Onion convention (verified on a real Onion card): Imgs/ subfolder.
+    let imgs = dir
+        .path()
+        .join("roms")
+        .join("psx")
+        .join("Imgs")
+        .join("Final Fantasy VII (USA).png");
+    assert!(imgs.exists(), "art must land in Imgs/: {}", imgs.display());
+    assert!(!dir
+        .path()
+        .join("roms")
+        .join("psx")
+        .join("Final Fantasy VII (USA).png")
+        .exists());
+}

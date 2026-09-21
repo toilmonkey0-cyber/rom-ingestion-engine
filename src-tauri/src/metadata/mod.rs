@@ -23,8 +23,10 @@ fn display_file(game: &crate::models::PlannedGame) -> Option<PathBuf> {
 /// Destination for a game's box art according to the preset:
 /// - ES-DE / Batocera: `<platform folder>/media/images/<stem>.png`,
 ///   referenced from the generated `gamelist.xml`.
+/// - OnionOS: `<platform folder>/Imgs/<stem>.png` (verified on a real
+///   Onion card — Onion themes render per-system `Imgs` folders).
 /// - Others: `<stem>.png` next to the playlist/CHD for frontends that
-///   auto-load adjacent art (MinUI-style conventions).
+///   auto-load adjacent art.
 fn artwork_dest(preset: &crate::models::FrontendPreset, display: &Path) -> PathBuf {
     use crate::models::FrontendPreset::*;
     let parent = display.parent().unwrap_or_else(|| Path::new(""));
@@ -34,6 +36,7 @@ fn artwork_dest(preset: &crate::models::FrontendPreset, display: &Path) -> PathB
         .unwrap_or("artwork");
     match preset {
         EsDe | Batocera => parent.join("media").join("images").join(format!("{}.png", stem)),
+        OnionOs => parent.join("Imgs").join(format!("{}.png", stem)),
         _ => parent.join(format!("{}.png", stem)),
     }
 }
