@@ -20,6 +20,14 @@ import {
 import { PlannedGame } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
 
+function formatBytesAlready(bytes: number): string {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
 const PLATFORM_OPTIONS = ['psx', 'saturn', 'dreamcast', 'segacd', 'pcecd', 'unknown'] as const;
 
 export interface Step2DryRunTableProps {
@@ -135,6 +143,46 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
           </div>
         </div>
       )}
+
+      {/* Space budget: will it fit? */}
+      {(() => {
+        const free = store.volumeInfo?.free_bytes ?? null;
+        const estimate = store.plan?.estimated_output_bytes ?? 0;
+        if (free === null) return null;
+        const fits = free >= estimate;
+        const short = estimate - free;
+        return (
+          <div
+            className={`rounded-xl p-4 border flex items-start space-x-3 text-xs ${
+              fits
+                ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                : 'bg-red-950/40 border-red-800/60 text-red-300'
+            }`}
+          >
+            {fits ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            )}
+            <div>
+              {fits ? (
+                <span>
+                  Target has <strong>{formatBytesAlready(free)}</strong> free; estimated output{' '}
+                  <strong>{formatBytesAlready(estimate)}</strong> — it fits with{' '}
+                  <strong>{formatBytesAlready(free - estimate)}</strong> to spare.
+                </span>
+              ) : (
+                <span>
+                  <strong>Not enough space:</strong> target has {formatBytesAlready(free)} free but the
+                  plan needs ~{formatBytesAlready(estimate)} — short by{' '}
+                  <strong>{formatBytesAlready(short)}</strong>. Deselect games or free space on the
+                  destination.
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Top summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

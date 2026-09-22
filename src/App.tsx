@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { WizardHeader } from './components/WizardHeader';
 import { Step1Config } from './components/Step1Config';
 import { Step2DryRunTable } from './components/Step2DryRunTable';
@@ -7,7 +7,12 @@ import { Step4Summary } from './components/Step4Summary';
 import { useIngestionStore } from './store/useIngestionStore';
 
 export const App: React.FC = () => {
-  const { step } = useIngestionStore();
+  const step = useIngestionStore((s) => s.step);
+  const hydrateFromSettings = useIngestionStore((s) => s.hydrateFromSettings);
+
+  useEffect(() => {
+    hydrateFromSettings();
+  }, [hydrateFromSettings]);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col selection:bg-cyan-500 selection:text-white relative">

@@ -11,7 +11,7 @@ use crate::chdman::runner::ChdmanRunner;
 use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
-    ArtworkProgressEvent, ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset,
+    ArtworkProgressEvent, ClassificationSource, Platform, DiscFingerprint, ExecutionSummary, FrontendPreset,
     GameClassification, GameStatusEvent, IngestionPlan, JobProgressEvent, MigrationProgressEvent,
     SkippedSource, TaskStatus,
 };
@@ -114,6 +114,175 @@ pub fn set_stored_custom_chdman_path(path: Option<String>) {
 
 /// Fallback classifier used when Redump hash cache misses and no Jev API key is provided
 /// or when remote Jev evaluation fails.
+/// Extracts `.zip`/`.7z` archives found under `input_dir` into the managed
+/// staging tree (`<AppData>/rom-ingestion-engine/extracted/<stem>/`) and
+/// returns the staging roots to scan alongside the input. Already-extracted
+/// archives (not newer than their staging) are reused, so re-scans are fast.
+pub fn stage_archives_for_input(input_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, out);
+                } else {
+                    out.push(p);
+                }
+            }
+        }
+    }
+    let mut all_files = Vec::new();
+    walk(input_dir, &mut all_files);
+
+    let staging_root = crate::chdman::downloader::get_managed_tools_dir()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .map(|p| p.join("extracted"))
+        .ok_or_else(|| "no staging location".to_string())?;
+
+    let mut roots = Vec::new();
+    for f in all_files {
+        let ext = f
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase())
+            .unwrap_or_default();
+        if ext != "zip" && ext != "7z" {
+            continue;
+        }
+        let stem = f
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("archive-{}", roots.len()));
+        // Only stage archives that actually contain disc images: a Downloads
+        // folder is full of unrelated zips (firmware, projects) and staging
+        // them all wastes gigabytes and scan time.
+        if !archive_contains_disc_images(&f, &ext) {
+            continue;
+        }
+        let dest = staging_root.join(crate::organizer::presets::sanitize_component(&stem, "archive"));
+        let archive_mtime = std::fs::metadata(&f).and_then(|m| m.modified()).ok();
+        let dest_mtime = std::fs::metadata(&dest).and_then(|m| m.modified()).ok();
+        let fresh = match (archive_mtime, dest_mtime) {
+            (Some(a), Some(d)) => d >= a,
+            _ => false,
+        };
+        if fresh && dest.is_dir() {
+            roots.push(dest);
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+        match ext.as_str() {
+            "zip" => extract_zip(&f, &dest)?,
+            "7z" => extract_7z(&f, &dest)?,
+            _ => unreachable!(),
+        }
+        roots.push(dest);
+    }
+    Ok(roots)
+}
+
+/// Cheap content sniff: lists archive entry names and reports whether any
+/// look like disc-image files (.cue/.gdi/.iso/.img/.bin).
+fn archive_contains_disc_images(archive: &Path, ext: &str) -> bool {
+    fn names_look_like_discs(mut names: impl Iterator<Item = String>) -> bool {
+        names.any(|n| {
+            let lower = n.to_ascii_lowercase();
+            [".cue", ".gdi", ".iso", ".img"].iter().any(|e| lower.ends_with(e))
+                || (lower.ends_with(".bin")
+                    && lower.contains("track"))
+        })
+    }
+    match ext {
+        "zip" => {
+            let Ok(file) = std::fs::File::open(archive) else { return false };
+            let Ok(mut za) = zip::ZipArchive::new(file) else { return false };
+            names_look_like_discs((0..za.len()).filter_map(|i| {
+                za.by_index(i).ok().map(|e| e.name().to_string())
+            }))
+        }
+        "7z" => {
+            let Ok(mut reader) = sevenz_rust::SevenZReader::open(
+                archive,
+                sevenz_rust::Password::empty(),
+            ) else {
+                return false;
+            };
+            let names: Vec<String> = reader
+                .archive()
+                .files
+                .iter()
+                .filter(|e| !e.is_directory())
+                .map(|e| e.name().to_string())
+                .collect();
+            names_look_like_discs(names.into_iter())
+        }
+        _ => false,
+    }
+}
+
+/// Guards archive entry names against absolute paths and `..` traversal.
+fn safe_entry_dest(root: &Path, name: &str) -> Option<PathBuf> {
+    let rel = std::path::Path::new(name);
+    for comp in rel.components() {
+        match comp {
+            std::path::Component::ParentDir
+            | std::path::Component::RootDir
+            | std::path::Component::Prefix(_) => return None,
+            _ => {}
+        }
+    }
+    let dest = root.join(rel);
+    if dest.strip_prefix(root).is_ok() {
+        Some(dest)
+    } else {
+        None
+    }
+}
+
+fn extract_zip(archive: &Path, dest: &Path) -> Result<(), String> {
+    let file = std::fs::File::open(archive).map_err(|e| e.to_string())?;
+    let mut za = zip::ZipArchive::new(file).map_err(|e| format!("bad zip: {}", e))?;
+    for i in 0..za.len() {
+        let mut entry = za.by_index(i).map_err(|e| e.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().to_string();
+        let Some(target) = safe_entry_dest(dest, name.as_str()) else {
+            continue; // hostile entry name: skipped, not fatal
+        };
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let mut out = std::fs::File::create(&target).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn extract_7z(archive: &Path, dest: &Path) -> Result<(), String> {
+    sevenz_rust::decompress_file(archive, dest).map_err(|e| format!("bad 7z: {}", e))?;
+    // decompress_file writes entry names verbatim: verify nothing escaped.
+    let root = std::fs::canonicalize(dest).map_err(|e| e.to_string())?;
+    fn check(dir: &Path, root: &Path) -> Result<(), String> {
+        for e in std::fs::read_dir(dir).map_err(|e| e.to_string())?.flatten() {
+            let p = e.path();
+            let canon = std::fs::canonicalize(&p).map_err(|e| e.to_string())?;
+            if !canon.starts_with(root) {
+                return Err(format!("archive tried to escape staging: {}", p.display()));
+            }
+            if p.is_dir() {
+                check(&p, root)?;
+            }
+        }
+        Ok(())
+    }
+    check(&root, &root)
+}
+
 fn classify_fallback(disc: &DiscFingerprint) -> GameClassification {
     let filename = disc
         .primary_file
@@ -186,16 +355,29 @@ pub async fn scan_and_plan(
     std::fs::create_dir_all(&out_path)
         .map_err(|e| format!("Cannot create output directory '{}': {}", output_dir, e))?;
 
-    let scan = crate::scanner::scan_directory(&in_path).map_err(|e| format!("Scan error: {}", e))?;
-    let skipped_sources: Vec<SkippedSource> = scan
-        .skipped
-        .into_iter()
-        .map(|s| SkippedSource {
-            path: s.descriptor,
-            reason: s.reason,
-        })
-        .collect();
-    let fingerprints = scan.fingerprints;
+    // Archive ingestion: .zip/.7z under the input are extracted to managed
+    // staging and scanned as additional roots.
+    let mut roots = vec![in_path.clone()];
+    match stage_archives_for_input(&in_path) {
+        Ok(staged) => roots.extend(staged),
+        Err(e) => return Err(format!("Archive extraction failed: {}", e)),
+    }
+
+    let mut fingerprints = Vec::new();
+    let mut skipped_sources: Vec<SkippedSource> = Vec::new();
+    for root in &roots {
+        let scan = crate::scanner::scan_directory(root)
+            .map_err(|e| format!("Scan error: {}", e))?;
+        for sk in scan.skipped {
+            skipped_sources.push(SkippedSource {
+                path: sk.descriptor,
+                reason: sk.reason,
+            });
+        }
+        fingerprints.extend(scan.fingerprints);
+    }
+    fingerprints.sort_by(|a, b| a.primary_file.cmp(&b.primary_file));
+    fingerprints.dedup_by(|a, b| a.primary_file == b.primary_file);
 
     let mut redump_db = RedumpDatabase::with_builtin_data();
     if let Some(paths) = redump_dat_paths.as_ref() {
@@ -245,11 +427,26 @@ pub async fn scan_and_plan(
                 .unwrap_or("");
 
             match jev.evaluate_game_filename(filename, folder).await {
-                Ok(c) => c,
+                Ok(mut c) => {
+                    if c.platform == Platform::Unknown {
+                        if let Some(p) = redump_db.infer_platform_by_title(&c.canonical_title) {
+                            c.platform = p;
+                            c.confidence = c.confidence.max(0.75);
+                        }
+                    }
+                    c
+                }
                 Err(_) => classify_fallback(&disc),
             }
         } else {
-            classify_fallback(&disc)
+            let mut c = classify_fallback(&disc);
+            if c.platform == Platform::Unknown {
+                if let Some(p) = redump_db.infer_platform_by_title(&c.canonical_title) {
+                    c.platform = p;
+                    c.confidence = 0.75;
+                }
+            }
+            c
         };
 
         classified_items.push((disc, classification));
@@ -750,6 +947,65 @@ pub fn execute_migration(
     plan: crate::migrator::MigrationPlan,
 ) -> Result<crate::migrator::MigrationSummary, String> {
     crate::migrator::execute_migration(&app_handle, &plan)
+}
+
+use serde::{Deserialize, Serialize};
+
+/// Persisted user preferences (everything except the Jev API key, which
+/// stays session-only by design). Stored as JSON next to the managed tools
+/// dir so it survives webview data resets.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AppSettings {
+    pub input_dir: Option<String>,
+    pub output_dir: Option<String>,
+    pub preset: Option<FrontendPreset>,
+    pub custom_config: Option<CustomPresetConfig>,
+    pub redump_dats: Option<Vec<String>>,
+    pub watch_enabled: Option<bool>,
+}
+
+fn settings_path() -> Result<PathBuf, String> {
+    let dir = crate::chdman::downloader::get_managed_tools_dir()
+        .map_err(|e| e.to_string())?
+        .parent()
+        .map(|p| p.join("settings.json"))
+        .ok_or_else(|| "no settings location".to_string())?;
+    Ok(dir)
+}
+
+#[tauri::command]
+pub fn get_app_settings() -> Result<AppSettings, String> {
+    let path = settings_path()?;
+    if !path.is_file() {
+        return Ok(AppSettings::default());
+    }
+    serde_json::from_str(&std::fs::read_to_string(&path).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("Corrupt settings file: {}", e))
+}
+
+#[tauri::command]
+pub fn set_app_settings(settings: AppSettings) -> Result<(), String> {
+    let path = settings_path()?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Free/total bytes of the volume containing `path` — the "will it fit?"
+/// input for space budgeting.
+#[tauri::command]
+pub fn get_volume_info(path: String) -> Result<serde_json::Value, String> {
+    let p = PathBuf::from(&path);
+    let probe = if p.is_dir() { p } else { p.parent().map(|x| x.to_path_buf()).unwrap_or(p) };
+    if !probe.is_dir() {
+        return Err(format!("Not a directory: {}", probe.display()));
+    }
+    let free = fs2::available_space(&probe).map_err(|e| e.to_string())?;
+    let total = fs2::total_space(&probe).map_err(|e| e.to_string())?;
+    Ok(serde_json::json!({ "free_bytes": free, "total_bytes": total }))
 }
 
 /// Redump.org per-system DAT slugs serving verified ZIP downloads.

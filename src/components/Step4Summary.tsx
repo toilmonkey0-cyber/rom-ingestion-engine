@@ -17,6 +17,27 @@ import {
 import { useIngestionStore } from '../store/useIngestionStore';
 import { readImageFileApi } from '../services/tauri';
 
+const DEVICE_TEST_TIPS: Record<string, string[]> = {
+  anbernicstock: [
+    'Stock PCSX cannot open .m3u playlists — launch the entry that names a disc, e.g. "(Disc 1)".',
+    'RetroArch opens both playlist and disc entries.',
+  ],
+  onionos: [
+    'Artwork appears in each system Imgs folder — rescan the game list if it was open.',
+    'PSX needs a BIOS file in the system BIOS folder (e.g. scph1001.bin).',
+  ],
+  garlic: [
+    'Artwork appears in each system Imgs folder — restart GarlicOS to refresh the list.',
+  ],
+  esde: [
+    'Load this library with ES-DE via --home, or move the ES-DE folder into your ES-DE application data.',
+    'Box art lives in media/images and is referenced from the centralized gamelists.',
+  ],
+  batocera: [
+    'gamelist.xml sits in each system folder; Batocera picks it up on the next scan.',
+  ],
+};
+
 function formatBytes(bytes: number): string {
   if (!bytes || bytes === 0) return '0 B';
   const k = 1024;
@@ -36,6 +57,8 @@ export const Step4Summary: React.FC = () => {
   const finishProgress = useIngestionStore((s) => s.finishProgress);
   const finishResult = useIngestionStore((s) => s.finishResult);
   const finishLibrary = useIngestionStore((s) => s.finishLibrary);
+  const preset = useIngestionStore((s) => s.preset);
+  const planGames = useIngestionStore((s) => s.plan?.games) ?? [];
 
   const [showTrashModal, setShowTrashModal] = useState(false);
   const [trashError, setTrashError] = useState<string | null>(null);
@@ -75,6 +98,7 @@ export const Step4Summary: React.FC = () => {
     totalSource > 0 ? Math.round((savedBytes / totalSource) * 100) : 0;
 
   const failedGames = summary?.failed_games ?? 0;
+  const planVerifiedCount = planGames.filter((g) => g.source === 'redumpcache').length;
   const successfulGames = summary?.successful_games ?? 0;
   const allFailed = summary !== null && successfulGames === 0;
   const partialFailure = summary !== null && failedGames > 0 && successfulGames > 0;
@@ -385,6 +409,35 @@ export const Step4Summary: React.FC = () => {
               </p>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Device test checklist */}
+      {successfulGames > 0 && (
+        <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-3">
+          <h3 className="text-base font-semibold text-white flex items-center space-x-2">
+            <ShieldCheck className="w-5 h-5 text-cyan-400" />
+            <span>Before You Eject: Device Test Checklist</span>
+          </h3>
+          <ul className="text-xs text-slate-300 space-y-1.5 list-disc pl-5">
+            <li>
+              Verify status:{' '}
+              <strong className="text-emerald-400">
+                {summary?.total_games ?? 0 > 0 ? '' : ''}
+                {planVerifiedCount} of {summary?.total_games ?? 0}
+              </strong>{' '}
+              games passed Redump hash verification; the rest were classified by title.
+            </li>
+            <li>Boot one game through the frontend you actually use — not just the file list.</li>
+            {(DEVICE_TEST_TIPS[preset] ?? []).map((tip, i) => (
+              <li key={i} className="text-slate-400">
+                {tip}
+              </li>
+            ))}
+            <li className="text-slate-400">
+              Keep the source dumps until you have booted each game at least once on hardware.
+            </li>
+          </ul>
         </div>
       )}
 

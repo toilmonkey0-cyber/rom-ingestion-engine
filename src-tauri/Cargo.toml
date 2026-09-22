@@ -25,6 +25,9 @@ tar = "0.4"
 quick-xml = "0.36"
 base64 = "0.22"
 notify = "8"
+tauri-plugin-dialog = "2"
+fs2 = "0.4"
+sevenz-rust = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

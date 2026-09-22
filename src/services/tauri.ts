@@ -535,3 +535,62 @@ export async function setGameTitleApi(
     games: plan.games.map((g) => (g.id === gameId ? { ...g, canonical_title: title } : g)),
   };
 }
+
+export interface VolumeInfo {
+  free_bytes: number;
+  total_bytes: number;
+}
+
+export async function getVolumeInfoApi(path: string): Promise<VolumeInfo | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<VolumeInfo>('get_volume_info', { path });
+  }
+  return null;
+}
+
+export interface AppSettingsPayload {
+  input_dir?: string | null;
+  output_dir?: string | null;
+  preset?: FrontendPreset | null;
+  custom_config?: CustomPresetConfig | null;
+  redump_dats?: string[] | null;
+  watch_enabled?: boolean | null;
+}
+
+export async function loadAppSettings(): Promise<AppSettingsPayload | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<AppSettingsPayload>('get_app_settings');
+  }
+  return null;
+}
+
+export async function saveAppSettings(settings: AppSettingsPayload): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_app_settings', { settings });
+  }
+}
+
+/** Native pickers (no-ops returning null in browser mode). */
+export async function pickDirectory(): Promise<string | null> {
+  if (isTauri()) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    return (await open({ directory: true, multiple: false })) as string | null;
+  }
+  return null;
+}
+
+export async function pickFiles(extensions: string[]): Promise<string[] | null> {
+  if (isTauri()) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const result = await open({
+      multiple: true,
+      filters: [{ name: extensions.join('/'), extensions }],
+    });
+    if (result === null) return null;
+    return Array.isArray(result) ? result : [result];
+  }
+  return null;
+}

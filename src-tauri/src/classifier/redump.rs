@@ -33,6 +33,12 @@ impl RedumpEntry {
     }
 }
 
+/// Lowercase alphanumeric-only title key for fuzzy-exact title matching
+/// ("Final Fantasy VII (USA)" == "final fantasy vii").
+pub fn normalize_title_key(t: &str) -> String {
+    t.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
 /// Returns `true` when `s` is a plausible SHA-1 digest: exactly 40 hex characters.
 pub fn is_valid_sha1_hex(s: &str) -> bool {
     s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -129,6 +135,28 @@ impl RedumpDatabase {
     pub fn get_entry(&self, sha1: &str) -> Option<&RedumpEntry> {
         let normalized = sha1.trim().to_ascii_lowercase();
         self.entries.get(&normalized)
+    }
+
+    /// Infers a platform from a canonical title by exact normalized match
+    /// against all indexed entries (builtin + DATs). Only returns when the
+    /// title unambiguously maps to ONE platform; multi-system titles stay
+    /// Unknown for the user to decide.
+    pub fn infer_platform_by_title(&self, title: &str) -> Option<Platform> {
+        let key = normalize_title_key(title);
+        if key.is_empty() {
+            return None;
+        }
+        let mut platforms = std::collections::HashSet::new();
+        for entry in self.entries.values() {
+            if normalize_title_key(&entry.canonical_title) == key {
+                platforms.insert(entry.platform);
+            }
+        }
+        if platforms.len() == 1 {
+            platforms.into_iter().next()
+        } else {
+            None
+        }
     }
 
     /// Performs a case-insensitive SHA-1 lookup, returning a `GameClassification` if matched.

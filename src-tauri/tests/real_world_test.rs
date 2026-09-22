@@ -552,3 +552,42 @@ fn real_remove_psp_third_birthday_via_app() {
     assert!(!iso.exists(), "ISO gone from card");
     println!("freed: 3rd Birthday ISO removed (backed up on PC)");
 }
+
+/// The headline QoL validation: point the engine at the REAL Downloads
+/// folder — raw .7z archives, no manual extraction — and produce a plan.
+#[tokio::test]
+#[ignore = "requires the real Downloads folder with .7z dumps"]
+async fn real_scan_downloads_archives_directly() {
+    let downloads = PathBuf::from("C:/Users/aaron/Downloads");
+    if !downloads.is_dir() {
+        return; // machine without the fixture
+    }
+    let output = staging().join("downloads_plan");
+    std::fs::create_dir_all(&output).unwrap();
+
+    let plan = rom_ingest_core::commands::scan_and_plan(
+        downloads.to_string_lossy().to_string(),
+        output.to_string_lossy().to_string(),
+        FrontendPreset::AnbernicStock,
+        None,
+        None,
+        Some(dats()),
+    )
+    .await
+    .expect("scan downloads with archives");
+
+    println!("\n=== DOWNLOADS DIRECT SCAN ===");
+    for g in &plan.games {
+        println!(
+            "  [{}] {} | {:?} {} discs={} confidence={:.2}",
+            format!("{:?}", g.source).to_lowercase(),
+            g.canonical_title,
+            g.platform,
+            g.region,
+            g.discs.len(),
+            g.confidence
+        );
+    }
+    println!("games: {} skipped: {}", plan.games.len(), plan.skipped_sources.len());
+    assert!(plan.games.len() >= 3, "archives should yield games without manual extraction");
+}

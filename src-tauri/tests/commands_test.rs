@@ -567,3 +567,120 @@ async fn test_scan_and_plan_with_redump_dat_verification() {
     .unwrap_err();
     assert!(err.contains("Cannot open Redump DAT"), "got: {}", err);
 }
+
+#[tokio::test]
+async fn test_scan_ingests_zip_archives() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("downloads");
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // Build a zip containing a cue+bin pair, exactly like a Vimm's download.
+    let zip_path = in_dir.join("Zipped Game (USA).zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut z = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("Zipped Game (USA)/Zipped Game (USA).cue", opts).unwrap();
+        z.write_all(b"FILE \"Zipped Game (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+        z.start_file("Zipped Game (USA)/Zipped Game (USA).bin", opts).unwrap();
+        z.write_all(b"zip game track data").unwrap();
+        z.finish().unwrap();
+    }
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("scan with archive");
+
+    assert_eq!(plan.games.len(), 1, "archive contents become a planned game");
+    assert_eq!(plan.games[0].canonical_title, "Zipped Game");
+}
+
+#[test]
+fn test_archive_entry_traversal_is_blocked() {
+    use rom_ingest_core::commands::stage_archives_for_input;
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("ins");
+    std::fs::create_dir_all(&in_dir).unwrap();
+
+    let zip_path = in_dir.join("evil.zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut z = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        // Hostile entries: traversal + absolute — must be skipped, not written.
+        z.start_file("../escaped.txt", opts).unwrap();
+        z.write_all(b"pwn").unwrap();
+        z.start_file("ok/game.cue", opts).unwrap();
+        z.write_all(b"FILE \"x.bin\" BINARY\n").unwrap();
+        z.finish().unwrap();
+    }
+
+    let roots = stage_archives_for_input(&in_dir).expect("staging succeeds");
+    assert_eq!(roots.len(), 1);
+    assert!(!dir.path().join("escaped.txt").exists(), "no escape");
+    let staged_root = &roots[0];
+    assert!(staged_root.join("ok").join("game.cue").is_file());
+    let mut files = Vec::new();
+    fn walk(p: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(p).unwrap().flatten() {
+            let ep = e.path();
+            if ep.is_dir() { walk(&ep, out) } else { out.push(ep) }
+        }
+    }
+    walk(staged_root, &mut files);
+    assert!(files.iter().all(|f| f.starts_with(staged_root)));
+}
+
+#[tokio::test]
+async fn test_platform_inferred_from_dat_titles() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("iin");
+    let out_dir = dir.path().join("oot");
+    std::fs::create_dir_all(in_dir.join("psx")).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // Cue name matches a DAT title; hash deliberately does NOT (so fallback
+    // classification runs, and title inference must rescue the platform).
+    let cue = in_dir.join("psx").join("RayEarth (USA).cue");
+    let bin = in_dir.join("psx").join("RayEarth (USA).bin");
+    File::create(&bin).unwrap().write_all(b"totally different bytes").unwrap();
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"RayEarth (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+
+    let dat = r#"<datafile><header><name>Sony - PlayStation</name></header>
+        <game name="Some Other Game (Europe)"><rom name="t.bin" size="1" sha1="cccccccccccccccccccccccccccccccccccccccc"/></game>
+        <game name="RayEarth (USA)"><rom name="t.bin" size="1" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></game>
+        <game name="RayEarth (Europe)"><rom name="t.bin" size="1" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/></game>
+        </datafile>"#;
+    let dat_path = dir.path().join("PSX.dat");
+    File::create(&dat_path).unwrap().write_all(dat.as_bytes()).unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        Some(vec![dat_path.to_string_lossy().to_string()]),
+    )
+    .await
+    .expect("scan");
+
+    assert_eq!(plan.games.len(), 1);
+    let g = &plan.games[0];
+    // Fallback source (hash missed) but platform inferred from the title.
+    assert_eq!(g.source, ClassificationSource::Fallback);
+    assert_eq!(g.platform, Platform::Psx, "platform inferred from DAT title");
+    let target = g.discs[0].target_chd_path.to_string_lossy().to_lowercase();
+    assert!(target.contains("roms/psx/"), "goes to psx folder: {}", target);
+}

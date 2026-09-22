@@ -10,12 +10,13 @@ import {
   CheckCircle,
   AlertCircle,
   Radar,
+  FolderOpen,
 } from 'lucide-react';
 import { FrontendPreset } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
 import { ChdmanStatusBanner } from './ChdmanStatusBanner';
 import { MigrationPanel } from './MigrationPanel';
-import { REDUMP_DAT_SLUGS, downloadRedumpDatsApi } from '../services/tauri';
+import { REDUMP_DAT_SLUGS, downloadRedumpDatsApi, pickDirectory, pickFiles } from '../services/tauri';
 
 interface PresetOption {
   id: FrontendPreset;
@@ -127,6 +128,23 @@ export const Step1Config: React.FC = () => {
     }
   };
 
+  const handlePickSource = async () => {
+    const dir = await pickDirectory();
+    if (dir) setInputDir(dir);
+  };
+  const handlePickTarget = async () => {
+    const dir = await pickDirectory();
+    if (dir) setOutputDir(dir);
+  };
+  const handlePickDats = async () => {
+    const files = await pickFiles(['dat']);
+    if (files && files.length > 0) {
+      const existing = redumpDats.split(/[,;\n]/).map((x) => x.trim()).filter(Boolean);
+      setRedumpDats(Array.from(new Set([...existing, ...files])).join(', '));
+      setDatMessage(`Added ${files.length} DAT file(s) to the list.`);
+    }
+  };
+
   const handleBrowseChdman = () => {
     const defaultVal = chdmanStatus?.path || '';
     const chosen = window.prompt(
@@ -221,6 +239,14 @@ export const Step1Config: React.FC = () => {
               <FolderInput className="w-4 h-4 text-slate-400" />
               <span>Source Dump Folder (Read-Only)</span>
             </label>
+            <button
+              type="button"
+              onClick={handlePickSource}
+              className="text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"
+            >
+              <FolderOpen className="w-3 h-3" />
+              <span>Browse…</span>
+            </button>
             <input
               type="text"
               value={inputDir}
@@ -239,6 +265,14 @@ export const Step1Config: React.FC = () => {
               <FolderOutput className="w-4 h-4 text-slate-400" />
               <span>Target Ingestion Directory</span>
             </label>
+            <button
+              type="button"
+              onClick={handlePickTarget}
+              className="text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"
+            >
+              <FolderOpen className="w-3 h-3" />
+              <span>Browse…</span>
+            </button>
             <input
               type="text"
               value={outputDir}
@@ -377,6 +411,16 @@ export const Step1Config: React.FC = () => {
         </div>
 
         <div className="space-y-2">
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handlePickDats}
+              className="text-[11px] px-2 py-1 rounded-lg border border-slate-700 bg-slate-800/70 hover:bg-slate-700 text-slate-300 flex items-center space-x-1"
+            >
+              <FolderOpen className="w-3 h-3" />
+              <span>Add .dat files…</span>
+            </button>
+          </div>
           <input
             type="text"
             value={redumpDats}

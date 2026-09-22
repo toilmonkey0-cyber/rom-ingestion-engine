@@ -12,6 +12,7 @@ import {
   ArtworkProgressEvent,
   WatchStatusEvent,
 } from '../types/plan';
+import type { VolumeInfo } from '../services/tauri';
 import {
   scanAndPlanApi,
   executePlanApi,
@@ -24,6 +25,9 @@ import {
   listenWatchStatusApi,
   setGamePlatformApi,
   setGameTitleApi,
+  loadAppSettings,
+  saveAppSettings,
+  getVolumeInfoApi,
   DEFAULT_CUSTOM_PRESET,
 } from '../services/tauri';
 
@@ -56,6 +60,9 @@ export interface IngestionState {
   finishProgress: { completed: number; total: number; title: string } | null;
   finishResult: FinishLibrarySummary | null;
 
+  // Space budgeting (target volume)
+  volumeInfo: VolumeInfo | null;
+
   // chdman readiness and downloader state
   chdmanStatus: ChdmanStatus | null;
   isDownloadingChdman: boolean;
@@ -73,6 +80,8 @@ export interface IngestionState {
   setApiKey: (key: string) => void;
   setRedumpDats: (dats: string) => void;
   configureWatch: (enabled: boolean) => Promise<void>;
+  hydrateFromSettings: () => Promise<void>;
+  refreshVolumeInfo: () => Promise<void>;
   setError: (error: string | null) => void;
   updateGameTitle: (gameId: string, newTitle: string) => void;
   toggleGameEnabled: (gameId: string) => void;
@@ -115,6 +124,7 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
   isFinishing: false,
   finishProgress: null,
   finishResult: null,
+  volumeInfo: null,
   chdmanStatus: null,
   isDownloadingChdman: false,
   chdmanDownloadProgress: 0,
@@ -220,6 +230,33 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
     await planOpsChain;
   },
 
+  hydrateFromSettings: async () => {
+    const saved = await loadAppSettings();
+    if (!saved) return;
+    const state = get();
+    set({
+      inputDir: state.inputDir || saved.input_dir || '',
+      outputDir: state.outputDir || saved.output_dir || '',
+      preset: saved.preset ?? state.preset,
+      customPresetConfig: saved.custom_config ?? state.customPresetConfig,
+      redumpDats: state.redumpDats || (saved.redump_dats ?? []).join(', '),
+    });
+  },
+
+  refreshVolumeInfo: async () => {
+    const { outputDir } = get();
+    if (!outputDir.trim()) {
+      set({ volumeInfo: null });
+      return;
+    }
+    try {
+      const info = await getVolumeInfoApi(outputDir.trim());
+      set({ volumeInfo: info });
+    } catch {
+      set({ volumeInfo: null });
+    }
+  },
+
   startScan: async () => {
     const { inputDir, outputDir, preset, apiKey, customPresetConfig, redumpDats } = get();
     if (!inputDir.trim()) {
@@ -246,6 +283,14 @@ export const useIngestionStore = create<IngestionState>((set, get) => ({
         datPaths.length > 0 ? datPaths : null
       );
       set({ plan, step: 2, isScanning: false });
+      get().refreshVolumeInfo();
+      saveAppSettings({
+        input_dir: inputDir,
+        output_dir: outputDir,
+        preset,
+        custom_config: preset === 'custom' ? customPresetConfig : null,
+        redump_dats: datPaths.length > 0 ? datPaths : null,
+      }).catch(() => {});
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       set({ error: `Scan failed: ${msg}`, isScanning: false });

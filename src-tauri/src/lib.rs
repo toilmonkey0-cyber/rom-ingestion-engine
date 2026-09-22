@@ -19,6 +19,7 @@ pub use plan_builder::*;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::scan_and_plan,
             commands::execute_plan,
@@ -34,6 +35,9 @@ pub fn run() {
             commands::configure_watch_folder,
             commands::set_game_platform,
             commands::set_game_title,
+            commands::get_app_settings,
+            commands::set_app_settings,
+            commands::get_volume_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
