@@ -9,6 +9,7 @@ pub use crate::chdman::downloader::{
 };
 use crate::chdman::runner::ChdmanRunner;
 use crate::classifier::jev::JevClient;
+use crate::classifier::needle::{NeedleClient, NeedleError};
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
     ArtworkProgressEvent, ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset,
@@ -345,6 +346,7 @@ pub async fn scan_and_plan(
     dat_path: Option<String>,
     region_priority: Option<Vec<String>>,
     jev_base_url: Option<String>,
+    needle_base_url: Option<String>,
     custom_config: Option<CustomPresetConfig>,
     redump_dat_paths: Option<Vec<String>>,
 ) -> Result<IngestionPlan, String> {
@@ -451,9 +453,14 @@ pub async fn scan_and_plan(
             Some(base) => JevClient::with_base_url(k.trim().to_string(), base.clone()),
             None => JevClient::new(k.trim().to_string()),
         });
+    let needle_client = needle_base_url
+        .as_ref()
+        .filter(|u| !u.trim().is_empty())
+        .map(|u| NeedleClient::with_base_url(u.trim().to_string()));
 
     let mut classified_items = Vec::new();
     let mut jev_errors: Vec<(PathBuf, String)> = Vec::new();
+    let mut needle_errors: Vec<(PathBuf, String)> = Vec::new();
 
     for disc in fingerprints {
         let hash_match = disc
@@ -469,7 +476,7 @@ pub async fn scan_and_plan(
 
         let classification = if let Some(c) = hash_match.or(serial_match) {
             c
-        } else if let Some(ref jev) = jev_client {
+        } else {
             let filename = disc
                 .primary_file
                 .file_name()
@@ -482,8 +489,34 @@ pub async fn scan_and_plan(
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
 
-            match jev.evaluate_game_filename(filename, folder).await {
-                Ok(mut c) => {
+            // Tier 2a: local Needle sidecar (offline, no key). A `NoCall`
+            // refusal means the engine sees no grounded classification
+            // (junk or off-topic): fall through to the remaining tiers
+            // without an error note.
+            let mut classified: Option<GameClassification> = None;
+            if let Some(ref needle) = needle_client {
+                match needle.evaluate_game_filename(filename, folder).await {
+                    Ok(c) => classified = Some(c),
+                    Err(NeedleError::NoCall) => {}
+                    Err(err) => {
+                        needle_errors.push((disc.primary_file.clone(), err.to_string()));
+                    }
+                }
+            }
+            // Tier 2b: remote Jev (BYOK escalation), tried when Needle is
+            // absent, refused, or errored.
+            if classified.is_none() {
+                if let Some(ref jev) = jev_client {
+                    match jev.evaluate_game_filename(filename, folder).await {
+                        Ok(c) => classified = Some(c),
+                        Err(err) => {
+                            jev_errors.push((disc.primary_file.clone(), err.to_string()));
+                        }
+                    }
+                }
+            }
+            match classified {
+                Some(mut c) => {
                     if c.platform == Platform::Unknown {
                         if let Some(p) = redump_db.infer_platform_by_title(&c.canonical_title) {
                             c.platform = p;
@@ -492,20 +525,17 @@ pub async fn scan_and_plan(
                     }
                     c
                 }
-                Err(err) => {
-                    jev_errors.push((disc.primary_file.clone(), err.to_string()));
-                    classify_fallback(&disc)
+                None => {
+                    let mut c = classify_fallback(&disc);
+                    if c.platform == Platform::Unknown {
+                        if let Some(p) = redump_db.infer_platform_by_title(&c.canonical_title) {
+                            c.platform = p;
+                            c.confidence = 0.75;
+                        }
+                    }
+                    c
                 }
             }
-        } else {
-            let mut c = classify_fallback(&disc);
-            if c.platform == Platform::Unknown {
-                if let Some(p) = redump_db.infer_platform_by_title(&c.canonical_title) {
-                    c.platform = p;
-                    c.confidence = 0.75;
-                }
-            }
-            c
         };
 
         classified_items.push((disc, classification));
@@ -529,6 +559,15 @@ pub async fn scan_and_plan(
             {
                 game.status_note = Some(format!("Jev classification failed: {err}"));
                 game.source = ClassificationSource::Fallback;
+            }
+            if let Some((_, err)) = needle_errors
+                .iter()
+                .find(|(path, _)| path == &disc.source_descriptor)
+            {
+                // Needle errors note the failure; the source stays whatever
+                // tier actually produced the classification (Jev if it was
+                // configured and succeeded, otherwise Fallback).
+                game.status_note = Some(format!("Needle classification failed: {err}"));
             }
         }
     }

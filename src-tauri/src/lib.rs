@@ -14,6 +14,7 @@ pub mod watch;
 
 pub use chdman::*;
 pub use classifier::jev::*;
+pub use classifier::needle::*;
 pub use commands::*;
 pub use organizer::*;
 pub use plan_builder::*;

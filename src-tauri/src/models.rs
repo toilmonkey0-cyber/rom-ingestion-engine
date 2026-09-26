@@ -29,6 +29,7 @@ pub struct DiscFingerprint {
 pub enum ClassificationSource {
     RedumpCache,
     JevAI,
+    NeedleAI,
     Fallback,
 }
 

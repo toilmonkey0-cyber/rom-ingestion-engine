@@ -24,6 +24,7 @@ async fn test_scan_and_plan_invalid_directory() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -59,6 +60,7 @@ async fn test_scan_and_plan_success_with_fallback() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -500,6 +502,7 @@ async fn test_scan_and_plan_with_custom_media_options() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -710,6 +713,7 @@ async fn test_execute_plan_chdman_verify_gate_blocks_success() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -800,6 +804,7 @@ async fn test_scan_and_plan_with_redump_dat_verification() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(vec![dat_path.to_string_lossy().to_string()]),
     )
@@ -823,6 +828,7 @@ async fn test_scan_and_plan_with_redump_dat_verification() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(vec![dir.path().join("nope.dat").to_string_lossy().to_string()]),
     )
@@ -861,6 +867,7 @@ async fn test_scan_ingests_zip_archives() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -941,6 +948,7 @@ async fn test_platform_inferred_from_dat_titles() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(vec![dat_path.to_string_lossy().to_string()]),
     )

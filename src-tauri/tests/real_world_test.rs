@@ -62,6 +62,7 @@ async fn real_scan_and_classify() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )
@@ -120,6 +121,7 @@ async fn real_convert_and_verify_with_real_chdman() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )
@@ -165,6 +167,7 @@ async fn real_finish_library_artwork() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )
@@ -291,6 +294,7 @@ async fn real_retarget_sequence() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )
@@ -416,6 +420,7 @@ async fn real_generate_esde_library() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )
@@ -600,6 +605,7 @@ async fn real_scan_downloads_archives_directly() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         Some(dats()),
     )

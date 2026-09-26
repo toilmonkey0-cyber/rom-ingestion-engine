@@ -58,6 +58,7 @@ export async function scanAndPlanApi(
       datPath: datPath?.trim() ? datPath.trim() : null,
       regionPriority: regionPriority && regionPriority.length > 0 ? regionPriority : null,
       jevBaseUrl: null,
+      needleBaseUrl: null,
       customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
       redumpDatPaths:
         redumpDatPaths && redumpDatPaths.length > 0

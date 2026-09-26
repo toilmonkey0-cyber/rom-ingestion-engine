@@ -4,7 +4,7 @@ export type FrontendPreset = 'esde' | 'onionos' | 'anbernicstock' | 'batocera' |
 
 export type TaskStatus = 'pending' | 'compressing' | 'verified' | 'failed' | 'skipped';
 
-export type ClassificationSource = 'redumpcache' | 'jevai' | 'fallback';
+export type ClassificationSource = 'redumpcache' | 'jevai' | 'needleai' | 'fallback';
 
 export interface PlannedDisc {
   disc_number: number;

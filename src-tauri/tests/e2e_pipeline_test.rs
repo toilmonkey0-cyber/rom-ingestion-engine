@@ -92,6 +92,7 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
         Some(dat_path.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -259,6 +260,7 @@ async fn test_e2e_pipeline_multiplatform_mixed_presets() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )
@@ -430,6 +432,7 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
         None,
         None,
         None,
+        None, // needle_base_url
         None,
         None,
     )

@@ -86,6 +86,7 @@ async fn test_without_dat_fallback_starts_disabled() {
         None,
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -123,6 +124,7 @@ async fn test_dat_checksum_names_the_fixture() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -176,6 +178,7 @@ async fn test_scan_serial_hit_beats_the_filename() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -222,6 +225,7 @@ async fn test_jev_error_is_visible_and_does_not_merge_discs() {
         None,
         None,
         Some(format!("http://127.0.0.1:{port}/v1/systemone")),
+        None, // needle_base_url
     None,
     None,
     )
@@ -358,6 +362,7 @@ async fn test_second_scan_of_unchanged_folder_proposes_zero_converts() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -380,6 +385,7 @@ async fn test_second_scan_of_unchanged_folder_proposes_zero_converts() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -414,6 +420,7 @@ async fn test_region_priority_keeps_alternate_out_of_trash() {
         None,
         Some(vec!["USA".to_string(), "Japan".to_string()]),
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -694,6 +701,7 @@ async fn test_shared_bin_referenced_by_two_cues_is_not_trashed() {
         None,
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )
@@ -898,6 +906,7 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,Sonic CD,segacd,USA,T-12345
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+        None, // needle_base_url
     None,
     None,
     )

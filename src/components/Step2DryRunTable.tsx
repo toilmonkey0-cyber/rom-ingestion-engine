@@ -15,6 +15,7 @@ import {
   Sparkles,
   Database,
   Bot,
+  Cpu,
   HelpCircle,
 } from 'lucide-react';
 import { PlannedGame } from '../types/plan';
@@ -539,6 +540,12 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
                             <>
                               <Bot className="w-3 h-3 text-purple-400" />
                               <span>JevAI</span>
+                            </>
+                          )}
+                          {game.source === 'needleai' && (
+                            <>
+                              <Cpu className="w-3 h-3 text-emerald-400" />
+                              <span>Needle</span>
                             </>
                           )}
                           {game.source === 'fallback' && (

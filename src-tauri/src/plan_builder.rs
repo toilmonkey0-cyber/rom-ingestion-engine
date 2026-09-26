@@ -290,6 +290,8 @@ pub fn build_ingestion_plan_with_options(
             group[0].1.source
         } else if group.iter().any(|(_, c)| c.source == ClassificationSource::JevAI) {
             ClassificationSource::JevAI
+        } else if group.iter().any(|(_, c)| c.source == ClassificationSource::NeedleAI) {
+            ClassificationSource::NeedleAI
         } else if group
             .iter()
             .any(|(_, c)| c.source == ClassificationSource::RedumpCache)
