@@ -1,0 +1,16 @@
+[
+  {
+    "name": "classify_rom",
+    "description": "Classify a retro disc-image filename into its target console platform, multi-disc status, disc number, and release region.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "platform": {"type": "string", "enum": ["psx", "saturn", "dreamcast", "segacd", "pcecd"], "description": "Target console: psx=Sony PlayStation, saturn=Sega Saturn, dreamcast=Sega Dreamcast, segacd=Sega CD / Mega CD, pcecd=PC Engine CD / TurboGrafx-CD"},
+        "is_multidisc": {"type": "boolean", "description": "True if this disc belongs to a multi-disc game release"},
+        "disc_number": {"type": "string", "enum": ["single", "1", "2", "3", "4", "5", "6", "7", "8"], "description": "Disc number within the set, or single for a standalone release"},
+        "region": {"type": "string", "enum": ["USA", "Europe", "Japan", "World"], "description": "Primary release region"}
+      },
+      "required": ["platform", "is_multidisc", "disc_number", "region"]
+    }
+  }
+]
