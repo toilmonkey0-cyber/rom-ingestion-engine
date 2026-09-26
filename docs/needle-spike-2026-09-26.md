@@ -138,6 +138,47 @@ let the tuned model handle region/disc/multidisc/junk. If NN platform + tuned
 tags both hit high 90s on a real-world messy eval, Needle replaces the Jev
 tier outright.
 
+## Embedding-index experiment (run 2026-09-26, same day)
+
+`needle_embed` (Python `Needle.embed`, base weights, 3072-dim) over cleaned
+stems (`clean_stem` mirrors `clean_canonical_title` + separator/junk-token
+normalization). Index = train-split canonical titles (440); queries = the 80
+held-out test rows. k=1 nearest neighbor, cosine.
+
+| variant | platform acc | notes |
+|---|---|---|
+| NN, title absent from index (unseen) | 36.2% | lexical false friends ("metal gear" → "Elemental Gimmick **Gear**"); segacd 0/11 |
+| **NN, title present (production-like, full index)** | **92.5%** | the case that matters: real DATs contain the real games |
+| full index + abstain below sim 0.985 | **97.1% @ 86.2% coverage** | remainder → needs_review with nearest match as suggestion |
+| full index + abstain below sim 0.975 | 94.7% @ 95.0% coverage | looser gate, more auto-accepted |
+
+Embedding texture: same-series titles sit at cosine ~0.999 (mangled variant
+of its own title still ~0.99); unrelated titles ~0.92–0.97, so a threshold
+separates match from guess. Stem cleaning before embedding is mandatory —
+raw messy names drift into the unrelated band. k=5 voting HURT (overrode a
+correct nearest match: "Tomba!" → "Tomba! 2" right, vote flipped wrong); k=1
+wins. Combined exact-all stayed low (13.8%) only because tuned-model tags
+still miss heavy synthetic mangling (~41% region) that the regex tier parses
+perfectly.
+
+**Promotion architecture (validated):**
+
+1. Platform: prebuilt embedding index from full Redump DATs (offline build,
+   shipped or built on first DAT load); runtime = embed cleaned stem +
+   k=1 cosine; sim ≥ ~0.975–0.985 auto-accept, below → `needs_review`
+   showing the nearest title as a suggestion. Regex `.gdi` hint stays as a
+   pre-check.
+2. Tags: keep the regex tier primary (it is 100% on tagged names);
+   tuned-Needle contributes junk/off-topic refusal and unusual-mangling
+   coverage.
+3. Runtime embed access: serve mode exposes no `/embed` route — the Python
+   API and the C API (`needle_embed` in needle.h / libneedle.a) do. Rust
+   integration therefore links the C API in-process or an upstream `/embed`
+   route is needed. Index math is trivial (10k × 3072 f32 ≈ 123 MB,
+   ~ms per query in Rust).
+4. Index build cost: ~5 ms/title (440 titles in 2.3 s); a full 5-platform
+   Redump DAT (~10k titles) ≈ 1 min, done offline.
+
 ## Open items for production promotion
 
 1. Tuned-model eval numbers (in flight) + retry with real Redump DATs for
