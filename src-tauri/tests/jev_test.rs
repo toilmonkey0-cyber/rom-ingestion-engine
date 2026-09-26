@@ -87,7 +87,7 @@ fn test_jev_single_disc_response_parsing() {
         parse_jev_response(mock_response_json, "Nights into Dreams (Japan).cue").unwrap();
     assert_eq!(classification.disc_number, None);
     assert!(!classification.is_multidisc);
-    assert_eq!(classification.region, "JPN");
+    assert_eq!(classification.region, "Japan");
     assert_eq!(classification.platform, Platform::Saturn);
 }
 

@@ -186,7 +186,9 @@ describe('useIngestionStore', () => {
       '',
       { download_boxart: true, download_screenshots: false, download_titles: false },
       'D:/dats/psx.dat',
-      ['USA', 'Japan']
+      ['USA', 'Japan'],
+      null,
+      null
     );
   });
 

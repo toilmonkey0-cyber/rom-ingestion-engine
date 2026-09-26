@@ -37,15 +37,17 @@ pub fn calculate_full_sha1<P: AsRef<Path>>(track1_path: P) -> std::io::Result<St
     Ok(format!("{:x}", hasher.finalize()))
 }
 
-/// Calculates the SHA-1 checksum on up to the first 16MB of track 1.
+/// Calculates the SHA-1 checksum of the full track-1 binary.
+///
+/// Redump keys hashes by the complete first track, so a prefix hash could never
+/// match the database; hash the entire file.
 pub fn calculate_track1_sha1<P: AsRef<Path>>(track1_path: P) -> std::io::Result<String> {
-    let file = File::open(track1_path)?;
-    let mut handle = file.take(16 * 1024 * 1024);
+    let mut file = File::open(track1_path)?;
     let mut hasher = Sha1::new();
     let mut buffer = [0u8; 64 * 1024];
 
     loop {
-        let n = handle.read(&mut buffer)?;
+        let n = file.read(&mut buffer)?;
         if n == 0 {
             break;
         }
@@ -135,9 +137,36 @@ fn collect_files<P: AsRef<Path>>(dir: P, files: &mut Vec<PathBuf>) -> Result<(),
     Ok(())
 }
 
+/// A disc that was discovered but excluded from the plan, with the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedDisc {
+    pub descriptor: PathBuf,
+    pub reason: String,
+}
+
+/// Result of a directory scan: usable disc fingerprints plus discs that were
+/// skipped (unreadable sheets). Discs with missing or escaping tracks stay in
+/// `fingerprints` with `scan_error` set so the plan can flag them for review.
+#[derive(Debug, Clone, Default)]
+pub struct ScanResult {
+    pub fingerprints: Vec<DiscFingerprint>,
+    pub skipped: Vec<SkippedDisc>,
+}
+
+/// True if `path` is `base` itself or located underneath it (both canonicalized).
+pub fn is_under_root(base: &Path, path: &Path) -> bool {
+    let canon_base = std::fs::canonicalize(base).unwrap_or_else(|_| base.to_path_buf());
+    let canon_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    canon_path.starts_with(&canon_base)
+}
+
 /// Recursively scans a root directory for disc images (.cue, .gdi, standalone .iso/.img),
 /// pairs multi-track referenced binary files, computes track 1 SHA-1, and infers platform hints.
-pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, ScannerError> {
+///
+/// Discs whose sheet cannot be read at all are skipped and reported in
+/// `ScanResult::skipped` instead of aborting the whole scan; discs with
+/// unresolvable track references keep planning with `scan_error` set.
+pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<ScanResult, ScannerError> {
     let root = root.as_ref();
     if !root.exists() {
         return Err(ScannerError::Io(std::io::Error::new(
@@ -155,7 +184,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
     let mut all_files = Vec::new();
     collect_files(root, &mut all_files)?;
 
-    let mut descriptors = Vec::new();
+    let mut descriptors: Vec<PathBuf> = Vec::new();
     let mut standalone_candidates = Vec::new();
 
     for file in all_files {
@@ -169,10 +198,26 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
 
     let mut paired_tracks: HashSet<PathBuf> = HashSet::new();
     let mut fingerprints = Vec::new();
+    let mut skipped: Vec<SkippedDisc> = Vec::new();
+
+    // Real-world Dreamcast dumps ship BOTH a .cue and a .gdi describing the
+    // same tracks; ingesting both would duplicate the game. When descriptors
+    // in the same directory reference overlapping track sets, keep the .gdi
+    // (the native GD-ROM layout) and drop the .cue.
+    descriptors = dedupe_cue_gdi_descriptors(descriptors);
 
     for desc_path in descriptors {
         let parent = desc_path.parent().unwrap_or(Path::new(""));
-        let bytes = std::fs::read(&desc_path)?;
+        let bytes = match std::fs::read(&desc_path) {
+            Ok(b) => b,
+            Err(e) => {
+                skipped.push(SkippedDisc {
+                    descriptor: desc_path,
+                    reason: format!("Unreadable sheet: {}", e),
+                });
+                continue;
+            }
+        };
         let content = String::from_utf8_lossy(&bytes);
         let ext = desc_path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase());
 
@@ -256,5 +301,75 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
     }
 
     fingerprints.sort_by(|a, b| a.primary_file.cmp(&b.primary_file));
-    Ok(fingerprints)
+    Ok(ScanResult {
+        fingerprints,
+        skipped,
+    })
+}
+
+/// Removes duplicate descriptors: when a cue and a gdi in the same folder
+/// reference an overlapping set of track files, only the gdi is kept.
+fn dedupe_cue_gdi_descriptors(descriptors: Vec<PathBuf>) -> Vec<PathBuf> {
+    let mut dropped: HashSet<PathBuf> = HashSet::new();
+    for i in 0..descriptors.len() {
+        if dropped.contains(&descriptors[i]) {
+            continue;
+        }
+        let is_gdi_i = descriptors[i]
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("gdi"))
+            .unwrap_or(false);
+        if !is_gdi_i {
+            continue;
+        }
+        let tracks_i = descriptor_track_set(&descriptors[i]);
+        for j in 0..descriptors.len() {
+            if i == j || dropped.contains(&descriptors[j]) {
+                continue;
+            }
+            let is_cue_j = descriptors[j]
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("cue"))
+                .unwrap_or(false);
+            if !is_cue_j {
+                continue;
+            }
+            if descriptors[i].parent() == descriptors[j].parent() {
+                let tracks_j = descriptor_track_set(&descriptors[j]);
+                let overlap = tracks_j.intersection(&tracks_i).count();
+                if overlap > 0 && overlap == tracks_j.len() {
+                    dropped.insert(descriptors[j].clone());
+                }
+            }
+        }
+    }
+    descriptors
+        .into_iter()
+        .filter(|d| !dropped.contains(d))
+        .collect()
+}
+
+fn descriptor_track_set(desc: &Path) -> HashSet<PathBuf> {
+    let mut set = HashSet::new();
+    let Some(parent) = desc.parent() else { return set };
+    let Some(content) = std::fs::read_to_string(desc).ok() else { return set };
+    let is_gdi = desc
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("gdi"))
+        .unwrap_or(false);
+    let refs = if is_gdi {
+        cue_parser::parse_gdi_references(&content)
+    } else {
+        cue_parser::parse_cue_references(&content)
+    };
+    for r in refs {
+        let resolved = cue_parser::resolve_path_case_insensitive(parent, &r);
+        if let Some(p) = resolved {
+            set.insert(p);
+        }
+    }
+    set
 }

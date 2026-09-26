@@ -20,6 +20,16 @@ import {
 import { PlannedGame } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
 
+function formatBytesAlready(bytes: number): string {
+  if (!bytes) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+}
+
+const PLATFORM_OPTIONS = ['psx', 'saturn', 'dreamcast', 'segacd', 'pcecd', 'unknown'] as const;
+
 export interface Step2DryRunTableProps {
   games?: PlannedGame[];
   onToggleGame?: (id: string) => void;
@@ -51,6 +61,7 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
 
   const games = propGames ?? store.plan?.games ?? [];
   const toggleGame = propToggleGame ?? store.toggleGameEnabled;
+  const setPlatform = store.setGamePlatform;
   const updateTitle = propUpdateTitle ?? store.updateGameTitle;
   const applyRelease = propApplyRelease ?? ((id: string, title: string, region: string) => {
     void store.applyReleasePick(id, title, region);
@@ -95,6 +106,8 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
   const handleSaveEdit = (gameId: string) => {
     if (editingText.trim()) {
       updateTitle(gameId, editingText.trim());
+      // Durable rename: re-resolves output file names on the backend.
+      store.renameGame(gameId, editingText.trim());
     }
     setEditingId(null);
   };
@@ -118,6 +131,71 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
 
   return (
     <div className="max-w-7xl mx-auto space-y-6 py-6 px-4">
+      {/* Discs skipped during scanning (missing tracks, escaping references) */}
+      {(store.plan?.skipped_sources?.length ?? 0) > 0 && (
+        <div className="bg-amber-950/30 border border-amber-800/50 rounded-xl p-4 flex items-start space-x-3 text-xs">
+          <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-semibold text-amber-200 mb-1">
+              {store.plan!.skipped_sources!.length} disc(s) were skipped during scanning
+            </p>
+            <ul className="space-y-0.5 text-amber-200/70 font-mono">
+              {store.plan!.skipped_sources!.slice(0, 5).map((s, i) => (
+                <li key={i} className="truncate" title={s.reason}>
+                  {s.path} — {s.reason}
+                </li>
+              ))}
+              {store.plan!.skipped_sources!.length > 5 && (
+                <li>…and {store.plan!.skipped_sources!.length - 5} more</li>
+              )}
+            </ul>
+            <p className="text-amber-200/60 mt-1">
+              These discs are excluded from the plan. Fix the sheets or restore the referenced tracks, then rescan.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Space budget: will it fit? */}
+      {(() => {
+        const free = store.volumeInfo?.free_bytes ?? null;
+        const estimate = store.plan?.estimated_output_bytes ?? 0;
+        if (free === null) return null;
+        const fits = free >= estimate;
+        const short = estimate - free;
+        return (
+          <div
+            className={`rounded-xl p-4 border flex items-start space-x-3 text-xs ${
+              fits
+                ? 'bg-emerald-950/30 border-emerald-800/50 text-emerald-300'
+                : 'bg-red-950/40 border-red-800/60 text-red-300'
+            }`}
+          >
+            {fits ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0 mt-0.5" />
+            )}
+            <div>
+              {fits ? (
+                <span>
+                  Target has <strong>{formatBytesAlready(free)}</strong> free; estimated output{' '}
+                  <strong>{formatBytesAlready(estimate)}</strong> — it fits with{' '}
+                  <strong>{formatBytesAlready(free - estimate)}</strong> to spare.
+                </span>
+              ) : (
+                <span>
+                  <strong>Not enough space:</strong> target has {formatBytesAlready(free)} free but the
+                  plan needs ~{formatBytesAlready(estimate)} — short by{' '}
+                  <strong>{formatBytesAlready(short)}</strong>. Deselect games or free space on the
+                  destination.
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Top summary cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 flex items-center space-x-3.5 shadow-sm">
@@ -258,11 +336,20 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
                         />
                       </td>
 
-                      {/* Platform Badge */}
+                      {/* Platform (editable — folder-hint misses need a manual call) */}
                       <td className="py-3 px-4 whitespace-nowrap">
-                        <span className="font-mono font-semibold px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-200 border border-slate-700 uppercase">
-                          {game.platform}
-                        </span>
+                        <select
+                          value={game.platform}
+                          onChange={(e) => setPlatform(game.id, e.target.value as import('../types/plan').Platform)}
+                          title="Platform determines the output folder"
+                          className="font-mono font-semibold px-2 py-1 rounded text-[11px] bg-slate-800 text-slate-200 border border-slate-700 uppercase focus:outline-none focus:ring-2 focus:ring-cyan-500/50 cursor-pointer"
+                        >
+                          {PLATFORM_OPTIONS.map((p) => (
+                            <option key={p} value={p}>
+                              {p}
+                            </option>
+                          ))}
+                        </select>
                       </td>
 
                       <td className="py-3 px-2 text-center">

@@ -92,6 +92,8 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
         Some(dat_path.to_string_lossy().to_string()),
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("scan_and_plan should succeed");
@@ -203,7 +205,7 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
     assert!(cue2_path.exists());
     assert!(bin2_path.exists());
 
-    let trashed = trash_source_files(summary.source_files_to_trash, input_dir.to_string_lossy().to_string())
+    let trashed = trash_source_files(summary.source_files_to_trash, None, None)
         .expect("trash_source_files should succeed");
     assert_eq!(trashed.count, 5);
 
@@ -252,6 +254,8 @@ async fn test_e2e_pipeline_multiplatform_mixed_presets() {
         in_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::OnionOs,
+        None,
+        None,
         None,
         None,
         None,
@@ -426,6 +430,8 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .expect("scan_and_plan");
@@ -463,11 +469,7 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
     assert!(progress.iter().any(|p| p.progress == 100.0));
 
     // Trash source files
-    let trashed = trash_source_files(
-        summary.source_files_to_trash,
-        roms_in.to_string_lossy().to_string(),
-    )
-    .expect("trash source files");
+    let trashed = trash_source_files(summary.source_files_to_trash, None, None).expect("trash source files");
     assert_eq!(trashed.count, 2);
     assert!(!cue_path.exists());
     assert!(!bin_path.exists());

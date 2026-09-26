@@ -98,6 +98,42 @@ impl ChdmanRunner {
         crate::chdman::downloader::parse_version_string(&text).unwrap_or_else(|| "unknown".to_string())
     }
 
+    /// Verifies an existing CHD file with `chdman verify`.
+    ///
+    /// Runs the full hash check inside the CHD against its stored checksums;
+    /// a zero exit status means the output is internally consistent. This is
+    /// the gate that must pass before source files may be trashed.
+    pub async fn verify<P: AsRef<Path>>(&self, chd_path: P) -> Result<(), ChdmanError> {
+        let chd_path = chd_path.as_ref();
+        if !chd_path.is_file() {
+            return Err(ChdmanError::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("CHD file not found for verification: {}", chd_path.display()),
+            )));
+        }
+
+        let mut cmd = tokio::process::Command::new(&self.binary_path);
+        cmd.arg("verify").arg("-i").arg(chd_path);
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true);
+
+        #[cfg(windows)]
+        {
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        let output = cmd.output().await?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(ChdmanError::ProcessFailed {
+                code: output.status.code(),
+                stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+            })
+        }
+    }
+
     /// Converts a disc image descriptor (e.g. .cue, .gdi, .iso) to a compressed CHD file.
     ///
     /// Writes progress updates as a float percentage [0.0 - 100.0] to `on_progress`.
@@ -259,7 +295,7 @@ impl ChdmanRunner {
     }
 
     pub async fn verify_output(&self, chd: &Path) -> Result<(), ChdmanError> {
-    if self.binary_path.as_os_str().is_empty() || !self.binary_path.exists() {
+        if self.binary_path.as_os_str().is_empty() || !self.binary_path.exists() {
         return Err(ChdmanError::BinaryNotFound);
     }
     let output = tokio::process::Command::new(&self.binary_path)

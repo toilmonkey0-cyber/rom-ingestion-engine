@@ -260,3 +260,114 @@ fn test_clean_canonical_title_and_tags() {
     assert_eq!(extract_region("Game (Japan, En)"), Some("Japan".to_string()));
     assert_eq!(extract_region("Game"), None);
 }
+
+#[test]
+fn test_redump_load_dat_xml() {
+    // sha1("track one data") = 0f48a8b40ad0afa2fc2c9d8f659e3f5b1b0e2d3c (fixture value)
+    let dat = r#"<?xml version="1.0"?>
+<datafile>
+  <header>
+    <name>Redump.org - Sony - Playstation</name>
+    <description>Redump.org - Sony - Playstation</description>
+  </header>
+  <game name="Klonoa (USA)">
+    <category>Games</category>
+    <rom name="Klonoa (USA) (Track 1).bin" size="100" crc="00000000" md5="00000000000000000000000000000000" sha1="0f48a8b40ad0afa2fc2c9d8f659e3f5b1b0e2d3c"/>
+    <rom name="Klonoa (USA) (Track 2).bin" size="50" crc="00000000" md5="00000000000000000000000000000000" sha1="1111111111111111111111111111111111111111"/>
+  </game>
+  <game name="Panzer Dragoon Saga (USA) (Disc 1)">
+    <rom name="track01.bin" size="10" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/>
+    <rom name="track02.bin" size="10" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/>
+  </game>
+  <game name="Broken Entry (Europe)">
+    <rom name="track01.bin" size="10" sha1="not-a-valid-hash"/>
+  </game>
+</datafile>
+"#;
+
+    let mut db = RedumpDatabase::new();
+    let count = db.load_dat_xml(dat.as_bytes()).expect("parse DAT");
+    // Two valid entries (first rom of each game); the invalid hash is skipped.
+    assert_eq!(count, 2);
+    assert_eq!(db.len(), 2);
+
+    // Platform comes from the DAT header via loose keyword inference.
+    let klonoa = db.lookup_sha1("0F48A8B40AD0AFA2FC2C9D8F659E3F5B1B0E2D3C").expect("case-insensitive lookup");
+    assert_eq!(klonoa.platform, Platform::Psx);
+    assert_eq!(klonoa.canonical_title, "Klonoa");
+    assert_eq!(klonoa.region, "USA");
+    assert!(!klonoa.is_multidisc);
+    assert_eq!(klonoa.source, ClassificationSource::RedumpCache);
+
+    // Only the FIRST rom of a game is indexed (track-1 semantics).
+    assert!(!db.contains_sha1("1111111111111111111111111111111111111111"));
+    assert!(!db.contains_sha1("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
+
+    // Disc metadata parsed from the game name; second game platform inherits header.
+    let pds = db.get_entry("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").expect("second entry");
+    assert_eq!(pds.platform, Platform::Psx);
+    assert_eq!(pds.disc_number, Some(1));
+    assert!(pds.is_multidisc);
+}
+
+#[test]
+fn test_parse_platform_loose_from_dat_headers() {
+    use rom_ingest_core::classifier::redump::parse_platform_loose;
+    assert_eq!(parse_platform_loose("Redump.org - Sony - Playstation"), Some(Platform::Psx));
+    assert_eq!(parse_platform_loose("Sega - Saturn"), Some(Platform::Saturn));
+    assert_eq!(parse_platform_loose("Sega - Mega CD - Sega CD"), Some(Platform::SegaCd));
+    assert_eq!(parse_platform_loose("NEC - PC Engine CD - TurboGrafx-CD"), Some(Platform::PceCd));
+    assert_eq!(parse_platform_loose("Sega Dreamcast"), Some(Platform::Dreamcast));
+    assert_eq!(parse_platform_loose("Nintendo - Game Boy"), None);
+}
+
+/// Live end-to-end DAT verification: downloads the real Redump PSX DAT from
+/// redump.org and parses it. Run with:
+/// `cargo test --test redump_test -- --ignored`
+#[tokio::test]
+#[ignore = "performs a real network download"]
+async fn live_download_and_parse_real_redump_psx_dat() {
+    let client = reqwest::Client::builder()
+        .user_agent("rom-ingest-dat-verify/0.1.0")
+        .timeout(std::time::Duration::from_secs(180))
+        .build()
+        .unwrap();
+    let bytes = client
+        .get("http://redump.org/datfile/psx/")
+        .send()
+        .await
+        .expect("request redump")
+        .error_for_status()
+        .expect("redump status")
+        .bytes()
+        .await
+        .expect("body");
+
+    let cursor = std::io::Cursor::new(&bytes[..]);
+    let mut archive = zip::ZipArchive::new(cursor).expect("zip");
+    let mut dat_bytes: Vec<u8> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).unwrap();
+        if entry.name().to_ascii_lowercase().ends_with(".dat") {
+            std::io::Read::read_to_end(&mut entry, &mut dat_bytes).unwrap();
+            break;
+        }
+    }
+    assert!(!dat_bytes.is_empty(), "zip contained a .dat");
+
+    let mut db = RedumpDatabase::new();
+    let count = db
+        .load_dat_xml(std::io::Cursor::new(&dat_bytes[..]))
+        .expect("parse real DAT");
+    // The PSX datfile currently lists ~10,900 games.
+    assert!(count > 9_000, "unexpectedly few entries parsed: {}", count);
+
+    // The very first sha1 in the DAT text must be present and classified.
+    let text = String::from_utf8_lossy(&dat_bytes).to_string();
+    let start = text.find("sha1=\"").expect("dat has sha1 attrs") + 6;
+    let hash: String = text[start..].chars().take(40).collect();
+    let sample = db.lookup_sha1(&hash).expect("first DAT hash resolves");
+    assert_eq!(sample.platform, Platform::Psx);
+    assert!(!sample.canonical_title.is_empty());
+    assert_eq!(sample.source, ClassificationSource::RedumpCache);
+}

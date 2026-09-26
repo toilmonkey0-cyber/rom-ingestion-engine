@@ -42,7 +42,7 @@ fn test_scan_directory_discovers_cue_and_pairs_bins() {
     let mut cue = File::create(&cue_path).unwrap();
     write!(cue, "FILE \"Game (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n").unwrap();
 
-    let discs = scan_directory(root).expect("scan should succeed");
+    let discs = scan_directory(root).expect("scan should succeed").fingerprints;
     assert_eq!(discs.len(), 1);
     assert_eq!(discs[0].primary_file, cue_path);
     assert_eq!(discs[0].binary_tracks.len(), 1);
@@ -68,7 +68,7 @@ fn test_scan_directory_gdi_disc() {
     let gdi_content = "3\n1 0 4 2352 \"track01.bin\" 0\n2 450 0 2352 \"track02.raw\" 0\n3 45000 4 2352 \"track03.bin\" 0\n";
     File::create(&gdi_path).unwrap().write_all(gdi_content.as_bytes()).unwrap();
 
-    let discs = scan_directory(root).expect("gdi scan should succeed");
+    let discs = scan_directory(root).expect("gdi scan should succeed").fingerprints;
     assert_eq!(discs.len(), 1);
     assert_eq!(discs[0].primary_file, gdi_path);
     assert_eq!(discs[0].binary_tracks.len(), 3);
@@ -86,7 +86,7 @@ fn test_scan_directory_standalone_iso() {
     let iso_path = root.join("standalone_game.iso");
     File::create(&iso_path).unwrap().write_all(b"iso binary content").unwrap();
 
-    let discs = scan_directory(root).expect("iso scan should succeed");
+    let discs = scan_directory(root).expect("iso scan should succeed").fingerprints;
     assert_eq!(discs.len(), 1);
     assert_eq!(discs[0].primary_file, iso_path);
     assert_eq!(discs[0].binary_tracks, vec![iso_path]);
@@ -121,7 +121,7 @@ fn test_scan_directory_platform_detection_from_folder_hints() {
         File::create(&bin).unwrap().write_all(b"game data").unwrap();
         File::create(&cue).unwrap().write_all(b"FILE \"Game.bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n").unwrap();
 
-        let discs = scan_directory(&sub).expect("scan subfolder");
+        let discs = scan_directory(&sub).expect("scan subfolder").fingerprints;
         assert_eq!(discs.len(), 1, "Failed for folder: {}", folder);
         assert_eq!(discs[0].detected_platform, expected_platform, "Failed for folder: {}", folder);
     }
@@ -132,8 +132,13 @@ fn test_scan_directory_missing_track_keeps_the_rest_of_the_folder() {
     let dir = tempdir().unwrap();
     let root = dir.path();
 
-    let cue_path = root.join("Missing.cue");
-    File::create(&cue_path).unwrap().write_all(b"FILE \"DoesNotExist.bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+    // One broken sheet (missing track) and one good one: the scan must still
+    // plan the good disc and flag the broken one instead of aborting.
+    let bad_cue = root.join("Missing.cue");
+    File::create(&bad_cue)
+        .unwrap()
+        .write_all(b"FILE \"DoesNotExist.bin\" BINARY\n  TRACK 01 MODE2/2352\n")
+        .unwrap();
 
     let good_bin = root.join("Good.bin");
     let good_cue = root.join("Good.cue");
@@ -143,15 +148,21 @@ fn test_scan_directory_missing_track_keeps_the_rest_of_the_folder() {
         .write_all(b"FILE \"Good.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
         .unwrap();
 
-    let discs = scan_directory(root).expect("a missing track must not reject the folder");
-    assert_eq!(discs.len(), 2);
-    let missing = discs
+    let scan = scan_directory(root).expect("a missing track must not reject the folder");
+    assert!(
+        scan.skipped.is_empty(),
+        "missing tracks stay in-plan with scan_error"
+    );
+    assert_eq!(scan.fingerprints.len(), 2);
+    let missing = scan
+        .fingerprints
         .iter()
         .find(|disc| disc.primary_file.ends_with("Missing.cue"))
         .unwrap();
     let error = missing.scan_error.as_deref().unwrap();
     assert!(error.contains("DoesNotExist.bin"), "{error}");
-    let good = discs
+    let good = scan
+        .fingerprints
         .iter()
         .find(|disc| disc.primary_file.ends_with("Good.cue"))
         .unwrap();
@@ -172,10 +183,10 @@ fn test_scan_directory_rejects_track_outside_input_folder() {
         .write_all(b"FILE \"../secret.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
         .unwrap();
 
-    let discs = scan_directory(&root).expect("scan");
-    assert_eq!(discs.len(), 1);
-    assert!(discs[0].binary_tracks.is_empty());
-    let error = discs[0].scan_error.as_deref().unwrap();
+    let scan = scan_directory(&root).expect("scan");
+    assert_eq!(scan.fingerprints.len(), 1);
+    assert!(scan.fingerprints[0].binary_tracks.is_empty());
+    let error = scan.fingerprints[0].scan_error.as_deref().unwrap();
     assert!(error.contains("escapes"), "{error}");
     assert!(outside.exists());
 }
@@ -192,7 +203,7 @@ fn test_sha1_calculation_matches_known_hash() {
     File::create(&bin_path).unwrap().write_all(b"hello world\n").unwrap();
     File::create(&cue_path).unwrap().write_all(b"FILE \"HashTest.bin\" BINARY\n  TRACK 01 MODE1/2352\n").unwrap();
 
-    let discs = scan_directory(root).expect("scan should succeed");
+    let discs = scan_directory(root).expect("scan should succeed").fingerprints;
     assert_eq!(discs.len(), 1);
     assert_eq!(discs[0].calculated_sha1, Some("22596363b3de40b06f981fb85d82312e8c0ed511".to_string()));
 }
@@ -239,7 +250,7 @@ fn test_multi_track_total_bytes_and_iso_deduplication() {
     let cue_content = "FILE \"Track 1.iso\" BINARY\n  TRACK 01 MODE1/2048\nFILE \"Track 2.bin\" BINARY\n  TRACK 02 AUDIO\n";
     File::create(&cue_path).unwrap().write_all(cue_content.as_bytes()).unwrap();
 
-    let discs = scan_directory(root).expect("scan should succeed");
+    let discs = scan_directory(root).expect("scan should succeed").fingerprints;
     // Track 1.iso should NOT be treated as a standalone disc
     assert_eq!(discs.len(), 1);
     assert_eq!(discs[0].primary_file, cue_path);
@@ -258,6 +269,36 @@ fn test_scan_directory_non_existent_and_empty() {
 
     let empty_dir = root.join("empty_folder");
     fs::create_dir(&empty_dir).unwrap();
-    let discs = scan_directory(&empty_dir).expect("empty scan should succeed");
+    let discs = scan_directory(&empty_dir).expect("empty scan should succeed").fingerprints;
     assert!(discs.is_empty());
+}
+
+#[test]
+fn test_scan_dedupes_cue_and_gdi_for_same_discs() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("Soulcalibur (USA)");
+    fs::create_dir_all(&root).unwrap();
+
+    // Real-world DC dump shape: one .cue AND one .gdi referencing the same bins.
+    for t in ["track01.bin", "track02.bin", "track03.bin"] {
+        File::create(root.join(t)).unwrap().write_all(b"data").unwrap();
+    }
+    File::create(root.join("game.cue"))
+        .unwrap()
+        .write_all(b"FILE \"track01.bin\" BINARY\n  TRACK 01 MODE1/2352\nFILE \"track02.bin\" BINARY\n  TRACK 02 AUDIO\nFILE \"track03.bin\" BINARY\n  TRACK 03 AUDIO\n")
+        .unwrap();
+    File::create(root.join("game.gdi"))
+        .unwrap()
+        .write_all(b"3\n1 0 4 2352 track01.bin 0\n2 450 0 2352 track02.bin 0\n3 45000 0 2352 track03.bin 0\n")
+        .unwrap();
+
+    let result = scan_directory(&root).expect("scan");
+    // Exactly one disc (the gdi), not two.
+    assert_eq!(result.fingerprints.len(), 1, "cue+gdi pair must deduplicate to one disc");
+    assert!(result.fingerprints[0]
+        .primary_file
+        .extension()
+        .unwrap()
+        .eq_ignore_ascii_case("gdi"));
+    assert_eq!(result.fingerprints[0].detected_platform, Platform::Dreamcast);
 }

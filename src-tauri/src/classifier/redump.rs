@@ -35,6 +35,17 @@ impl RedumpEntry {
     }
 }
 
+/// Lowercase alphanumeric-only title key for fuzzy-exact title matching
+/// ("Final Fantasy VII (USA)" == "final fantasy vii").
+pub fn normalize_title_key(t: &str) -> String {
+    t.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+}
+
+/// Returns `true` when `s` is a plausible SHA-1 digest: exactly 40 hex characters.
+pub fn is_valid_sha1_hex(s: &str) -> bool {
+    s.len() == 40 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// In-memory Redump SHA-1 hash lookup database and cache.
 #[derive(Debug, Clone, Default)]
 pub struct RedumpDatabase {
@@ -64,6 +75,10 @@ impl RedumpDatabase {
     }
 
     /// Inserts or updates an entry for the given SHA-1 hash (normalized to lowercase).
+    ///
+    /// Returns `false` and does nothing when `sha1` is not a valid 40-character
+    /// hex string — garbage keys can never match a real hash and only mask
+    /// problems in the source data.
     #[allow(clippy::too_many_arguments)]
     pub fn insert(
         &mut self,
@@ -74,8 +89,11 @@ impl RedumpDatabase {
         is_multidisc: bool,
         disc_number: Option<u8>,
         total_discs: Option<u8>,
-    ) {
+    ) -> bool {
         let normalized = sha1.trim().to_ascii_lowercase();
+        if !is_valid_sha1_hex(&normalized) {
+            return false;
+        }
         self.entries.insert(
             normalized,
             RedumpEntry {
@@ -88,6 +106,7 @@ impl RedumpDatabase {
                 serial: None,
             },
         );
+        true
     }
 
     pub fn insert_serial(&mut self, serial: &str, entry: RedumpEntry) {
@@ -101,10 +120,15 @@ impl RedumpDatabase {
             .map(|entry| entry.to_game_classification())
     }
 
-    /// Inserts a `RedumpEntry` for the given SHA-1 hash.
-    pub fn insert_entry(&mut self, sha1: &str, entry: RedumpEntry) {
+    /// Inserts a `RedumpEntry` for the given SHA-1 hash. Returns `false` for
+    /// invalid (non-hex) hashes.
+    pub fn insert_entry(&mut self, sha1: &str, entry: RedumpEntry) -> bool {
         let normalized = sha1.trim().to_ascii_lowercase();
+        if !is_valid_sha1_hex(&normalized) {
+            return false;
+        }
         self.entries.insert(normalized, entry);
+        true
     }
 
     /// Returns the number of entries stored in the database.
@@ -129,6 +153,28 @@ impl RedumpDatabase {
         self.entries.get(&normalized)
     }
 
+    /// Infers a platform from a canonical title by exact normalized match
+    /// against all indexed entries (builtin + DATs). Only returns when the
+    /// title unambiguously maps to ONE platform; multi-system titles stay
+    /// Unknown for the user to decide.
+    pub fn infer_platform_by_title(&self, title: &str) -> Option<Platform> {
+        let key = normalize_title_key(title);
+        if key.is_empty() {
+            return None;
+        }
+        let mut platforms = std::collections::HashSet::new();
+        for entry in self.entries.values() {
+            if normalize_title_key(&entry.canonical_title) == key {
+                platforms.insert(entry.platform);
+            }
+        }
+        if platforms.len() == 1 {
+            platforms.into_iter().next()
+        } else {
+            None
+        }
+    }
+
     /// Performs a case-insensitive SHA-1 lookup, returning a `GameClassification` if matched.
     pub fn lookup_sha1(&self, sha1: &str) -> Option<GameClassification> {
         let normalized = sha1.trim().to_ascii_lowercase();
@@ -142,8 +188,17 @@ impl RedumpDatabase {
         let mut header_cols: Option<Vec<String>> = None;
         let mut delimiter: Option<char> = None;
 
+        let mut first_line = true;
         for line_res in buf.lines() {
-            let line = line_res?;
+            let mut line = line_res?;
+            // Strip a UTF-8 BOM from the first line so header detection works
+            // on files produced by Windows tooling.
+            if first_line {
+                first_line = false;
+                if line.starts_with('\u{feff}') {
+                    line.remove(0);
+                }
+            }
             let trimmed = line.trim();
             if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
                 continue;
@@ -198,6 +253,134 @@ impl RedumpDatabase {
     /// Convenience wrapper to load tab-separated records.
     pub fn load_tsv<R: Read>(&mut self, reader: R) -> Result<usize, std::io::Error> {
         self.load_csv_or_tsv(reader)
+    }
+
+    /// Loads entries from a Redump-style XML DAT file (`*.dat`).
+    ///
+    /// The platform for every entry is inferred from the DAT header
+    /// (`<name>`/`<description>`, e.g. "Sony Playstation"); each `<game>`
+    /// contributes its **first** `<rom>`'s SHA-1 (Redump lists tracks in
+    /// order, so the first rom is track 1) together with the game name, from
+    /// which region/disc metadata is extracted. Invalid or missing hashes are
+    /// skipped (and not counted).
+    pub fn load_dat_xml<R: Read>(&mut self, reader: R) -> Result<usize, quick_xml::Error> {
+        use quick_xml::events::Event;
+        use quick_xml::Reader;
+
+        let mut buf_reader = std::io::BufReader::new(reader);
+        let mut xml = Reader::from_reader(buf_reader.by_ref());
+
+        let mut buf = Vec::new();
+        let mut platform = Platform::Unknown;
+        let mut in_header = false;
+
+        let mut current_game: Option<String> = None;
+        let mut took_first_rom = false;
+        let mut count = 0;
+
+        loop {
+            match xml.read_event_into(&mut buf)? {
+                Event::Eof => break,
+                Event::Start(e) => match e.name().as_ref() {
+                    b"header" => in_header = true,
+                    b"game" => {
+                        current_game = e
+                            .attributes()
+                            .filter_map(|a| a.ok())
+                            .find(|a| a.key.as_ref() == b"name")
+                            .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()));
+                        took_first_rom = false;
+                    }
+                    b"rom" => {
+                        // Only the first rom of a game (track 1) is indexed.
+                        if let (Some(game_name), false) = (&current_game, took_first_rom) {
+                            if let Some(sha1) = e
+                                .attributes()
+                                .filter_map(|a| a.ok())
+                                .find(|a| a.key.as_ref() == b"sha1")
+                                .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+                            {
+                                let (disc_number, total_discs) = extract_disc_info(game_name);
+                                let region = extract_region(game_name)
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                let title = clean_canonical_title(game_name);
+                                let is_multidisc = disc_number
+                                    .map(|d| d > 0 && total_discs.map(|t| t > 1).unwrap_or(true))
+                                    .unwrap_or(false);
+                                if self.insert(
+                                    &sha1,
+                                    &title,
+                                    platform,
+                                    &region,
+                                    is_multidisc,
+                                    disc_number,
+                                    total_discs,
+                                ) {
+                                    count += 1;
+                                }
+                            }
+                            took_first_rom = true;
+                        }
+                    }
+                    _ => {}
+                },
+                Event::Empty(e) => {
+                    // <rom .../> self-closing form (used by some DAT writers)
+                    if e.name().as_ref() == b"rom" {
+                        if let (Some(game_name), false) = (&current_game, took_first_rom) {
+                            if let Some(sha1) = e
+                                .attributes()
+                                .filter_map(|a| a.ok())
+                                .find(|a| a.key.as_ref() == b"sha1")
+                                .and_then(|a| a.unescape_value().ok().map(|v| v.into_owned()))
+                            {
+                                let (disc_number, total_discs) = extract_disc_info(game_name);
+                                let region = extract_region(game_name)
+                                    .unwrap_or_else(|| "Unknown".to_string());
+                                if self.insert(
+                                    &sha1,
+                                    &clean_canonical_title(game_name),
+                                    platform,
+                                    &region,
+                                    disc_number
+                                        .map(|d| d > 0 && total_discs.map(|t| t > 1).unwrap_or(true))
+                                        .unwrap_or(false),
+                                    disc_number,
+                                    total_discs,
+                                ) {
+                                    count += 1;
+                                }
+                            }
+                            took_first_rom = true;
+                        }
+                    }
+                }
+                Event::Text(t) => {
+                    if in_header {
+                        let text = t.unescape().unwrap_or_default().to_string();
+                        // The header name/description identifies the system
+                        // (e.g. "Redump.org - Sony - Playstation").
+                        if parse_platform(&text) != Platform::Unknown {
+                            platform = parse_platform(&text);
+                        } else if let Some(p) = parse_platform_loose(&text) {
+                            platform = p;
+                        }
+                    }
+                }
+                Event::End(e) => match e.name().as_ref() {
+                    b"header" => in_header = false,
+                    b"game" => {
+                        current_game = None;
+                        took_first_rom = false;
+                    }
+                    _ => {}
+                },
+                _ => {}
+            }
+            buf.clear();
+        }
+
+        Ok(count)
     }
 
     fn process_row(&mut self, fields: &[String], headers: Option<&[String]>) -> bool {
@@ -668,6 +851,32 @@ fn parse_bool(s: &str) -> Option<bool> {
     }
 }
 
+/// Infers a platform from free-form text such as a Redump DAT header
+/// ("Redump.org - Sony - Playstation") via keyword containment.
+pub fn parse_platform_loose(text: &str) -> Option<Platform> {
+    let alphanumeric: String = text
+        .to_ascii_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect();
+    if alphanumeric.contains("dreamcast") {
+        return Some(Platform::Dreamcast);
+    }
+    if alphanumeric.contains("saturn") {
+        return Some(Platform::Saturn);
+    }
+    if alphanumeric.contains("playstation") || alphanumeric.contains(" psx ") || alphanumeric == "psx" {
+        return Some(Platform::Psx);
+    }
+    if alphanumeric.contains("mega cd") || alphanumeric.contains("megacd") || alphanumeric.contains("sega cd") || alphanumeric.contains("segacd") {
+        return Some(Platform::SegaCd);
+    }
+    if alphanumeric.contains("pc engine") || alphanumeric.contains("pcengine") || alphanumeric.contains("turbografx") {
+        return Some(Platform::PceCd);
+    }
+    None
+}
+
 /// Tokenizes a delimited line, handling double-quoted strings and escaped quotes.
 fn parse_delimited_row(line: &str, delimiter: char) -> Vec<String> {
     let mut fields = Vec::new();
@@ -698,12 +907,71 @@ static DISC_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)\(?(?:disc|disque|disco|cd)\s*(\d+)(?:\s*(?:of|/)\s*(\d+))?\)?"#).unwrap()
 });
 
+/// Redump region vocabulary (lowercase), including common abbreviations that
+/// appear in filenames and model answers. Shared by region extraction and tag
+/// stripping so a recognized region is always stripped from the canonical title.
+const REGIONS: &[&str] = &[
+    "usa", "us", "na", "north america", "europe", "eu", "pal", "japan", "jpn", "world", "asia",
+    "australia", "brazil", "canada", "china", "france", "germany", "hong kong", "italy", "korea",
+    "netherlands", "russia", "spain", "sweden", "taiwan", "uk", "mexico", "argentina",
+];
+
+/// Maps a lowercase region token (or alias) to its canonical display form.
+fn canonical_region(lower: &str) -> Option<String> {
+    match lower {
+        "usa" | "us" | "na" | "north america" => Some("USA".to_string()),
+        "europe" | "eu" | "pal" => Some("Europe".to_string()),
+        "japan" | "jpn" => Some("Japan".to_string()),
+        "uk" => Some("UK".to_string()),
+        _ => {
+            if REGIONS.contains(&lower) {
+                // Title-case each word: "hong kong" -> "Hong Kong"
+                Some(
+                    lower
+                        .split_whitespace()
+                        .map(|w| {
+                            let mut cs = w.chars();
+                            match cs.next() {
+                                Some(f) => {
+                                    f.to_uppercase().collect::<String>()
+                                        + &cs.as_str().to_lowercase()
+                                }
+                                None => String::new(),
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" "),
+                )
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Language codes that appear as parenthesized tags, e.g. `(En)`, `(Ja,En)`.
+const LANG_CODES: &[&str] = &["en", "ja", "fr", "de", "es", "it", "pt", "ko", "zh"];
+
+fn build_region_pattern() -> String {
+    REGIONS.join("|")
+}
+
+fn build_lang_list_pattern() -> String {
+    let codes = LANG_CODES.join("|");
+    format!(r"(?:{})(?:\s*,\s*(?:{}))*", codes, codes)
+}
+
 static REGION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\((USA|Europe|Japan|World|Asia|Australia|Germany|France|Spain|Italy)(?:,[^)]*)?\)"#).unwrap()
+    Regex::new(&format!(r#"(?i)\(({})(?:,[^)]*)?\)"#, build_region_pattern())).unwrap()
 });
 
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?i)\s*\((?:usa|europe|japan|world|asia|australia|germany|france|spain|italy|en|ja|fr|de|es|it|disc\s*\d+[^)]*|cd\s*\d+[^)]*|disque\s*\d+[^)]*|disco\s*\d+[^)]*|track\s*\d+[^)]*|v\d+[^)]*|rev\s*[^)]*|demo|beta|proto|sample|unl|alt\s*\d*|edc)[^)]*\)"#).unwrap()
+    Regex::new(&format!(
+        r#"(?i)\s*\((?:{}(?:,[^)]*)?|{}|(?:disc|disque|disco|cd|track)\s*\d+[^)]*|v\d+[^)]*|rev\s*[^)]*|demo|beta|proto|sample|unl|alt\s*\d*|edc)\)"#,
+        build_region_pattern(),
+        build_lang_list_pattern(),
+    ))
+    .unwrap()
 });
 
 static BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
@@ -738,23 +1006,10 @@ pub fn extract_disc_info(title: &str) -> (Option<u8>, Option<u8>) {
 
 /// Extracts release region from parenthesized tags in a title.
 pub fn extract_region(title: &str) -> Option<String> {
-    REGION_RE.captures(title).and_then(|c| c.get(1)).map(|m| {
-        let matched = m.as_str();
-        // Capitalize standard region names
-        match matched.to_ascii_lowercase().as_str() {
-            "usa" => "USA".to_string(),
-            "europe" => "Europe".to_string(),
-            "japan" => "Japan".to_string(),
-            "world" => "World".to_string(),
-            "asia" => "Asia".to_string(),
-            "australia" => "Australia".to_string(),
-            "germany" => "Germany".to_string(),
-            "france" => "France".to_string(),
-            "spain" => "Spain".to_string(),
-            "italy" => "Italy".to_string(),
-            _ => matched.to_string(),
-        }
-    })
+    REGION_RE
+        .captures(title)
+        .and_then(|c| c.get(1))
+        .and_then(|m| canonical_region(&m.as_str().trim().to_ascii_lowercase()))
 }
 
 /// Strips release tags (region, disc, revision, dump tags) from a raw title to return canonical game title.

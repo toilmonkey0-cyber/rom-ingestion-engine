@@ -47,7 +47,9 @@ fn test_multi_disc_plan_grouping() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::AnbernicStock,
+        None,
         vec![(disc1, class1), (disc2, class2)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -87,7 +89,9 @@ fn test_single_disc_plan_has_no_m3u() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(disc, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -143,7 +147,9 @@ fn test_discs_out_of_order_sorted_by_disc_number() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::OnionOs,
+        None,
         vec![(disc2, class2), (disc1, class1)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -178,7 +184,9 @@ fn test_low_confidence_sets_needs_review() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(disc, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -229,7 +237,9 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::Batocera,
+        None,
         vec![(disc1, class1), (disc2, class2)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
@@ -273,7 +283,9 @@ fn test_same_title_different_regions_stay_separate_games() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(usa, usa_class), (japan, japan_class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 2);
@@ -317,7 +329,9 @@ fn test_duplicate_disc_numbers_are_not_renumbered_into_one_set() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::AnbernicStock,
+        None,
         vec![(copy_a, class.clone()), (copy_b, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 2);
@@ -352,9 +366,56 @@ fn test_gdi_plan_names_createdvd() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![(disc, class)],
+        Vec::new(),
     );
 
     assert_eq!(plan.games.len(), 1);
     assert_eq!(plan.games[0].discs[0].chdman_command, "createdvd");
+}
+
+#[test]
+fn test_retarget_title_and_platform_rebuild_paths() {
+    use rom_ingest_core::models::*;
+    use rom_ingest_core::plan_builder::{retarget_game_platform, retarget_game_title};
+
+    let plan = build_ingestion_plan(
+        PathBuf::from("in"),
+        PathBuf::from("out"),
+        FrontendPreset::AnbernicStock,
+        None,
+        vec![(
+            DiscFingerprint {
+                primary_file: PathBuf::from("in/psx/Game (USA).cue"),
+                binary_tracks: vec![PathBuf::from("in/psx/Game (USA).bin")],
+                detected_platform: Platform::Unknown,
+                calculated_sha1: None,
+                total_bytes: 100,
+                scan_error: None,
+            },
+            GameClassification {
+                canonical_title: "Wrong Title".into(),
+                platform: Platform::Unknown,
+                region: "USA".into(),
+                is_multidisc: false,
+                disc_number: None,
+                total_discs: None,
+                confidence: 0.7,
+                source: ClassificationSource::Fallback,
+            },
+        )],
+        Vec::new(),
+    );
+    let id = plan.games[0].id.clone();
+
+    let mut plan = plan;
+    retarget_game_title(&mut plan, &id, "Correct Title: Special Edition");
+    let p = plan.games[0].discs[0].target_chd_path.to_string_lossy().to_string();
+    assert!(p.contains("Correct Title Special Edition"), "illegal chars sanitized + renamed: {}", p);
+
+    retarget_game_platform(&mut plan, &id, Platform::Psx);
+    let p2 = plan.games[0].discs[0].target_chd_path.to_string_lossy().to_lowercase();
+    assert!(p2.contains("roms/ps/") || p2.contains("roms\\ps\\"), "platform folder applied: {}", p2);
+    assert_eq!(plan.games[0].platform, Platform::Psx);
 }

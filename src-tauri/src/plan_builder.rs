@@ -4,10 +4,10 @@ use std::path::PathBuf;
 
 use crate::models::{
     ClassificationSource, DiscFingerprint, FrontendPreset, GameClassification, IngestionPlan,
-    MediaOptions, Platform, PlannedDisc, PlannedGame, TaskStatus,
+    MediaOptions, Platform, PlannedDisc, PlannedGame, SkippedSource, TaskStatus,
 };
 use crate::organizer::media::resolve_media_paths_for_game;
-use crate::organizer::presets::resolve_target_paths;
+use crate::organizer::presets::{resolve_target_paths_with_custom, CustomPresetConfig};
 
 /// Generates a clean, deterministic game ID for a planned game.
 fn generate_game_id(platform: Platform, title: &str, index: usize) -> String {
@@ -51,33 +51,129 @@ struct IntermediateDisc {
     binary_tracks: Vec<PathBuf>,
 }
 
-/// Builds an `IngestionPlan` from classified disc fingerprints with default media options (boxart enabled).
+/// Re-resolves one planned game's output paths for a different platform
+/// (per-game override from the dry-run UI). Mutates the plan in place.
+pub fn retarget_game_platform(
+    plan: &mut crate::models::IngestionPlan,
+    game_id: &str,
+    platform: crate::models::Platform,
+) {
+    let Some(game) = plan.games.iter_mut().find(|g| g.id == game_id) else {
+        return;
+    };
+    game.platform = platform;
+
+    // The custom config is not persisted on the plan; Custom preset targets
+    // fall back to defaults, matching how the plan was originally built
+    // without a config.
+    let custom = None;
+    let mut new_m3u = None;
+    let disc_count = game.discs.len() as u8;
+    let is_multidisc = game.is_multidisc;
+    for disc in game.discs.iter_mut() {
+        let targets = resolve_target_paths_with_custom(
+            &plan.output_dir,
+            plan.preset,
+            custom,
+            platform,
+            &game.canonical_title,
+            &game.region,
+            is_multidisc,
+            Some(disc.disc_number),
+            Some(disc_count),
+        );
+        disc.target_chd_path = targets.chd_path;
+        disc.relative_m3u_entry = targets.relative_m3u_entry;
+        if new_m3u.is_none() {
+            new_m3u = targets.m3u_path;
+        }
+    }
+    if is_multidisc {
+        game.target_m3u_path = new_m3u;
+    }
+}
+
+/// Re-resolves one planned game's output paths for a new canonical title
+/// (dry-run rename). The title also drives artwork lookups and file names.
+pub fn retarget_game_title(
+    plan: &mut crate::models::IngestionPlan,
+    game_id: &str,
+    title: &str,
+) {
+    use crate::organizer::presets::sanitize_component;
+
+    let title = sanitize_component(title.trim(), "Game");
+    let Some(game) = plan.games.iter_mut().find(|g| g.id == game_id) else {
+        return;
+    };
+    game.canonical_title = title.clone();
+
+    let custom = None;
+    let mut new_m3u = None;
+    let disc_count = game.discs.len() as u8;
+    let is_multidisc = game.is_multidisc;
+    for disc in game.discs.iter_mut() {
+        let targets = resolve_target_paths_with_custom(
+            &plan.output_dir,
+            plan.preset,
+            custom,
+            game.platform,
+            &title,
+            &game.region,
+            is_multidisc,
+            Some(disc.disc_number),
+            Some(disc_count),
+        );
+        disc.target_chd_path = targets.chd_path;
+        disc.relative_m3u_entry = targets.relative_m3u_entry;
+        if new_m3u.is_none() {
+            new_m3u = targets.m3u_path;
+        }
+    }
+    if is_multidisc {
+        game.target_m3u_path = new_m3u;
+    }
+}
+
+/// Builds an `IngestionPlan` from classified disc fingerprints with default media
+/// options (boxart enabled) and no custom preset config.
 pub fn build_ingestion_plan(
     input_dir: PathBuf,
     output_dir: PathBuf,
     preset: FrontendPreset,
+    custom_config: Option<&CustomPresetConfig>,
     items: Vec<(DiscFingerprint, GameClassification)>,
+    skipped_sources: Vec<SkippedSource>,
 ) -> IngestionPlan {
     build_ingestion_plan_with_options(
         input_dir,
         output_dir,
         preset,
+        custom_config,
         items,
+        skipped_sources,
         &MediaOptions::default(),
     )
 }
 
-/// Builds an `IngestionPlan` from classified disc fingerprints with specific `MediaOptions`.
+/// Builds an `IngestionPlan` from classified disc fingerprints with specific
+/// `MediaOptions`.
 ///
-/// Multi-disc items of the same canonical title and platform are merged into
-/// single `PlannedGame` instances, sorted by disc number, with target `.chd` paths
-/// and optional `.m3u` playlists determined according to the target frontend preset.
-/// Target media paths (boxart, screenshots, titles) are populated according to `media_options`.
+/// Multi-disc items of the same canonical title, platform, region and edition
+/// are merged into single `PlannedGame` instances, sorted by disc number, with
+/// target `.chd` paths and optional `.m3u` playlists determined according to
+/// the target frontend preset (honoring `custom_config` for `Custom`).
+/// Target media paths (boxart, screenshots, titles) are populated according to
+/// `media_options`; discs skipped during scanning are passed through for UI
+/// reporting.
+#[allow(clippy::too_many_arguments)]
 pub fn build_ingestion_plan_with_options(
     input_dir: PathBuf,
     output_dir: PathBuf,
     preset: FrontendPreset,
+    custom_config: Option<&CustomPresetConfig>,
     items: Vec<(DiscFingerprint, GameClassification)>,
+    skipped_sources: Vec<SkippedSource>,
     media_options: &MediaOptions,
 ) -> IngestionPlan {
     let mut planned_games = Vec::new();
@@ -98,9 +194,10 @@ pub fn build_ingestion_plan_with_options(
             let command = crate::paths::chdman_command_for_input(&fingerprint.primary_file)
                 .unwrap_or("createcd")
                 .to_string();
-            let paths = resolve_target_paths(
+            let paths = resolve_target_paths_with_custom(
                 &output_dir,
                 preset,
+                custom_config,
                 classification.platform,
                 &classification.canonical_title,
                 &classification.region,
@@ -118,6 +215,7 @@ pub fn build_ingestion_plan_with_options(
                     disc_number: 1,
                     source_descriptor: fingerprint.primary_file.clone(),
                     target_chd_path: paths.chd_path,
+                    relative_m3u_entry: None,
                     status: TaskStatus::Failed,
                     binary_tracks: fingerprint.binary_tracks.clone(),
                     chdman_command: command,
@@ -262,9 +360,10 @@ pub fn build_ingestion_plan_with_options(
             let mut target_m3u_path = None;
 
             for disc in &release {
-                let target_paths = resolve_target_paths(
+                let target_paths = resolve_target_paths_with_custom(
                     &output_dir,
                     preset,
+                    custom_config,
                     platform,
                     &canonical_title,
                     &region,
@@ -284,6 +383,7 @@ pub fn build_ingestion_plan_with_options(
                     disc_number: disc.disc_number,
                     source_descriptor: disc.source_descriptor.clone(),
                     target_chd_path: target_paths.chd_path,
+                    relative_m3u_entry: target_paths.relative_m3u_entry,
                     status: TaskStatus::Pending,
                     binary_tracks: disc.binary_tracks.clone(),
                     chdman_command,
@@ -335,6 +435,7 @@ pub fn build_ingestion_plan_with_options(
         output_dir,
         preset,
         games: planned_games,
+        skipped_sources,
         total_source_bytes,
         estimated_output_bytes,
     }

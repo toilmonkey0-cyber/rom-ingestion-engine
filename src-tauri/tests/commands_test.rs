@@ -24,6 +24,8 @@ async fn test_scan_and_plan_invalid_directory() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -52,6 +54,8 @@ async fn test_scan_and_plan_success_with_fallback() {
         psx_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::EsDe,
+        None,
+        None,
         None,
         None,
         None,
@@ -97,6 +101,7 @@ async fn test_execute_plan_single_disc_success() {
         status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
     };
 
     let game = PlannedGame {
@@ -122,10 +127,10 @@ async fn test_execute_plan_single_disc_success() {
         output_dir: out_dir.clone(),
         preset: FrontendPreset::EsDe,
         games: vec![game],
+        skipped_sources: Vec::new(),
         total_source_bytes: 2048,
         estimated_output_bytes: 1200,
     };
-
     let emitter = MockEventSink::new();
     let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
 
@@ -203,6 +208,7 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
                 status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
             },
             PlannedDisc {
                 disc_number: 2,
@@ -211,6 +217,7 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
                 status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
             },
         ],
         target_m3u_path: Some(m3u.clone()),
@@ -229,10 +236,10 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
         output_dir: out_dir,
         preset: FrontendPreset::EsDe,
         games: vec![game],
+        skipped_sources: Vec::new(),
         total_source_bytes: 1_400_000,
         estimated_output_bytes: 840_000,
     };
-
     let emitter = MockEventSink::new();
     let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
 
@@ -273,6 +280,7 @@ async fn test_execute_plan_skipped_when_disabled() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: None,
         confidence: 0.5,
@@ -290,10 +298,10 @@ async fn test_execute_plan_skipped_when_disabled() {
         output_dir: dir.path().to_path_buf(),
         preset: FrontendPreset::EsDe,
         games: vec![game],
+        skipped_sources: Vec::new(),
         total_source_bytes: 0,
         estimated_output_bytes: 0,
     };
-
     let emitter = MockEventSink::new();
     let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
 
@@ -330,6 +338,7 @@ async fn test_execute_plan_failure_handling() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: None,
         confidence: 0.9,
@@ -347,10 +356,10 @@ async fn test_execute_plan_failure_handling() {
         output_dir: dir.path().to_path_buf(),
         preset: FrontendPreset::EsDe,
         games: vec![game],
+        skipped_sources: Vec::new(),
         total_source_bytes: 0,
         estimated_output_bytes: 0,
     };
-
     let emitter = MockEventSink::new();
     let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
 
@@ -381,10 +390,9 @@ fn test_trash_source_files() {
         file1.to_string_lossy().to_string(),
         file2.to_string_lossy().to_string(),
         file1.to_string_lossy().to_string(), // duplicate
-        "non_existent_file_9999.bin".to_string(), // non-existent
     ];
 
-    let outcome = trash_source_files(files_to_trash, dir.path().to_string_lossy().to_string()).unwrap();
+    let outcome = trash_source_files(files_to_trash, None, None).unwrap();
     assert_eq!(outcome.count, 2);
     assert_eq!(outcome.bytes, 6);
     assert!(!file1.exists());
@@ -392,26 +400,41 @@ fn test_trash_source_files() {
 }
 
 #[test]
-fn test_trash_source_files_leaves_paths_outside_the_input_folder() {
-    let inside = tempdir().unwrap();
-    let outside = tempdir().unwrap();
-    let kept = inside.path().join("keep.bin");
-    let secret = outside.path().join("secret.bin");
-    File::create(&kept).unwrap().write_all(b"keep").unwrap();
-    File::create(&secret).unwrap().write_all(b"secret").unwrap();
+fn test_trash_source_files_rejects_invalid_input_atomically() {
+    let dir = tempdir().unwrap();
+    let good = dir.path().join("good.bin");
+    let bad_ext = dir.path().join("danger.exe");
+    File::create(&good).unwrap().write_all(b"123").unwrap();
+    File::create(&bad_ext).unwrap().write_all(b"456").unwrap();
 
-    let outcome = trash_source_files(
+    // Non-image extensions are rejected, and nothing is trashed as a result.
+    let err = trash_source_files(
         vec![
-            kept.to_string_lossy().to_string(),
-            secret.to_string_lossy().to_string(),
+            good.to_string_lossy().to_string(),
+            bad_ext.to_string_lossy().to_string(),
         ],
-        inside.path().to_string_lossy().to_string(),
+        None,
+        None,
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(err.contains("not a disc-image file"), "got: {}", err);
+    assert!(good.exists(), "validation must happen before any deletion");
+    assert!(bad_ext.exists());
 
-    assert_eq!(outcome.count, 1);
-    assert!(!kept.exists());
-    assert!(secret.exists());
+    // Non-existent paths are rejected too.
+    let err2 = trash_source_files(vec!["non_existent_file_9999.bin".to_string()], None, None).unwrap_err();
+    assert!(err2.contains("no longer exists"), "got: {}", err2);
+
+    // Containment: a valid image outside the given base dir is refused,
+    // and nothing inside the same call is trashed.
+    let err3 = trash_source_files(
+        vec![good.to_string_lossy().to_string()],
+        Some(dir.path().join("nested").to_string_lossy().to_string()),
+        None,
+    )
+    .unwrap_err();
+    assert!(err3.contains("outside the scanned library"), "got: {}", err3);
+    assert!(good.exists());
 }
 
 #[tokio::test]
@@ -477,6 +500,8 @@ async fn test_scan_and_plan_with_custom_media_options() {
         None,
         None,
         None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -485,11 +510,11 @@ async fn test_scan_and_plan_with_custom_media_options() {
     assert_eq!(plan.games[0].target_media_paths.len(), 2);
     assert_eq!(
         plan.games[0].target_media_paths[0],
-        out_dir.join("roms").join("psx").join("media").join("covers").join("Crash Bandicoot (USA).png")
+        out_dir.join("ROMs").join("psx").join("media").join("covers").join("Crash Bandicoot (USA).png")
     );
     assert_eq!(
         plan.games[0].target_media_paths[1],
-        out_dir.join("roms").join("psx").join("media").join("screenshots").join("Crash Bandicoot (USA).png")
+        out_dir.join("ROMs").join("psx").join("media").join("screenshots").join("Crash Bandicoot (USA).png")
     );
 }
 
@@ -580,6 +605,7 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: None,
         confidence: 0.95,
@@ -605,6 +631,7 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: None,
         confidence: 0.95,
@@ -622,10 +649,10 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
         output_dir: out_dir,
         preset: FrontendPreset::EsDe,
         games: vec![game1, game2],
+        skipped_sources: Vec::new(),
         total_source_bytes: 4096,
         estimated_output_bytes: 2400,
     };
-
     let emitter = MockEventSink::new();
     let chdman = ChdmanRunner::new(Some(get_mock_chdman_path()));
 
@@ -655,3 +682,276 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
     server.abort();
 }
 
+
+#[tokio::test]
+async fn test_execute_plan_chdman_verify_gate_blocks_success() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("vin");
+    let out_dir = dir.path().join("vout");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // The fallback title keeps the "verify_fail" marker in the target CHD
+    // filename, which the mock chdman uses to fail `verify`.
+    let cue = in_dir.join("Klonoa verify_fail (USA).cue");
+    let bin = in_dir.join("Klonoa verify_fail (USA).bin");
+    File::create(&bin).unwrap().write_all(b"klonoa data").unwrap();
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"Klonoa verify_fail (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("scan_and_plan");
+    assert_eq!(plan.games.len(), 1);
+
+    // The merged phase gate disables fallback games pending review; the user
+    // accepts the game so execution reaches the verification gate.
+    let mut plan = plan;
+    assert!(!plan.games[0].enabled, "fallback game must start disabled for review");
+    plan.games[0].enabled = true;
+
+    let target_chd = plan.games[0].discs[0].target_chd_path.clone();
+    let emitter = MockEventSink::new();
+    let runner = ChdmanRunner::new(Some(get_mock_chdman_path()));
+    let summary = execute_plan_internal(&emitter, plan, Some(runner), Some(2))
+        .await
+        .expect("execute_plan_internal completes");
+
+    // Conversion succeeded but verification failed: the game must be counted
+    // as failed, no source files may be eligible for trash, and the suspect
+    // CHD must have been removed.
+    assert_eq!(summary.successful_games, 0);
+    assert_eq!(summary.failed_games, 1);
+    assert!(summary.source_files_to_trash.is_empty());
+    assert!(!target_chd.exists(), "failed-verification CHD must be deleted");
+
+    let statuses = emitter.status_events.lock().unwrap().clone();
+    assert!(statuses.iter().any(|e| e.status == TaskStatus::Failed
+        && e.error.as_deref().unwrap_or("").contains("CHD verification failed")));
+}
+
+#[tokio::test]
+async fn test_runner_verify_success_and_failure() {
+    let runner = ChdmanRunner::new(Some(get_mock_chdman_path()));
+
+    // Valid CHD (magic bytes) verifies cleanly.
+    let dir = tempdir().unwrap();
+    let good = dir.path().join("good.chd");
+    File::create(&good).unwrap().write_all(b"MComprHD\x00\x00restofthefilepadding").unwrap();
+    runner.verify(&good).await.expect("valid chd verifies");
+
+    // Not a CHD at all.
+    let bad = dir.path().join("bad.chd");
+    File::create(&bad).unwrap().write_all(b"junkjunkjunk").unwrap();
+    assert!(runner.verify(&bad).await.is_err());
+
+    // Missing file.
+    assert!(runner.verify(dir.path().join("missing.chd")).await.is_err());
+}
+
+#[tokio::test]
+async fn test_scan_and_plan_with_redump_dat_verification() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("din");
+    let out_dir = dir.path().join("dout");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    let bin = in_dir.join("RayEarth (USA).bin");
+    let content = b"rayearth track one payload";
+    File::create(&bin).unwrap().write_all(content).unwrap();
+    let cue = in_dir.join("RayEarth (USA).cue");
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"RayEarth (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n    INDEX 01 00:00:00\n")
+        .unwrap();
+
+    // SHA-1 of the full track content (computed with the scanner's own
+    // full-file hasher), embedded in a Redump-style DAT.
+    let sha1 = rom_ingest_core::scanner::calculate_track1_sha1(&bin).expect("hash track");
+    let dat = format!(
+        r#"<datafile><header><name>Redump.org - Sony - Playstation</name></header>
+        <game name="RayEarth (USA)"><rom name="track.bin" size="{}" sha1="{}"/></game></datafile>"#,
+        content.len(),
+        sha1
+    );
+    let dat_path = dir.path().join("PSX.dat");
+    File::create(&dat_path).unwrap().write_all(dat.as_bytes()).unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![dat_path.to_string_lossy().to_string()]),
+    )
+    .await
+    .expect("scan with DAT");
+
+    assert_eq!(plan.games.len(), 1);
+    let game = &plan.games[0];
+    assert_eq!(game.canonical_title, "RayEarth");
+    assert_eq!(game.source, ClassificationSource::RedumpCache);
+    assert_eq!(game.confidence, 1.0);
+    assert!(!game.needs_review);
+
+    // A bogus DAT path must fail loudly instead of silently skipping.
+    let err = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![dir.path().join("nope.dat").to_string_lossy().to_string()]),
+    )
+    .await
+    .unwrap_err();
+    assert!(err.contains("Cannot open Redump DAT"), "got: {}", err);
+}
+
+#[tokio::test]
+async fn test_scan_ingests_zip_archives() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("downloads");
+    let out_dir = dir.path().join("out");
+    std::fs::create_dir_all(&in_dir).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // Build a zip containing a cue+bin pair, exactly like a Vimm's download.
+    let zip_path = in_dir.join("Zipped Game (USA).zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut z = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        z.start_file("Zipped Game (USA)/Zipped Game (USA).cue", opts).unwrap();
+        z.write_all(b"FILE \"Zipped Game (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+        z.start_file("Zipped Game (USA)/Zipped Game (USA).bin", opts).unwrap();
+        z.write_all(b"zip game track data").unwrap();
+        z.finish().unwrap();
+    }
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    .expect("scan with archive");
+
+    assert_eq!(plan.games.len(), 1, "archive contents become a planned game");
+    assert_eq!(plan.games[0].canonical_title, "Zipped Game");
+}
+
+#[test]
+fn test_archive_entry_traversal_is_blocked() {
+    use rom_ingest_core::commands::stage_archives_for_input;
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("ins");
+    std::fs::create_dir_all(&in_dir).unwrap();
+
+    let zip_path = in_dir.join("evil.zip");
+    {
+        let file = File::create(&zip_path).unwrap();
+        let mut z = zip::ZipWriter::new(file);
+        let opts = zip::write::SimpleFileOptions::default();
+        // Hostile entries: traversal + absolute — must be skipped, not written.
+        z.start_file("../escaped.txt", opts).unwrap();
+        z.write_all(b"pwn").unwrap();
+        z.start_file("ok/game.cue", opts).unwrap();
+        z.write_all(b"FILE \"x.bin\" BINARY\n").unwrap();
+        z.finish().unwrap();
+    }
+
+    let roots = stage_archives_for_input(&in_dir).expect("staging succeeds");
+    assert_eq!(roots.len(), 1);
+    assert!(!dir.path().join("escaped.txt").exists(), "no escape");
+    let staged_root = &roots[0];
+    assert!(staged_root.join("ok").join("game.cue").is_file());
+    let mut files = Vec::new();
+    fn walk(p: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(p).unwrap().flatten() {
+            let ep = e.path();
+            if ep.is_dir() { walk(&ep, out) } else { out.push(ep) }
+        }
+    }
+    walk(staged_root, &mut files);
+    assert!(files.iter().all(|f| f.starts_with(staged_root)));
+}
+
+#[tokio::test]
+async fn test_platform_inferred_from_dat_titles() {
+    let dir = tempdir().unwrap();
+    let in_dir = dir.path().join("iin");
+    let out_dir = dir.path().join("oot");
+    std::fs::create_dir_all(in_dir.join("psx")).unwrap();
+    std::fs::create_dir_all(&out_dir).unwrap();
+
+    // Cue name matches a DAT title; hash deliberately does NOT (so fallback
+    // classification runs, and title inference must rescue the platform).
+    let cue = in_dir.join("psx").join("RayEarth (USA).cue");
+    let bin = in_dir.join("psx").join("RayEarth (USA).bin");
+    File::create(&bin).unwrap().write_all(b"totally different bytes").unwrap();
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"RayEarth (USA).bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
+
+    let dat = r#"<datafile><header><name>Sony - PlayStation</name></header>
+        <game name="Some Other Game (Europe)"><rom name="t.bin" size="1" sha1="cccccccccccccccccccccccccccccccccccccccc"/></game>
+        <game name="RayEarth (USA)"><rom name="t.bin" size="1" sha1="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/></game>
+        <game name="RayEarth (Europe)"><rom name="t.bin" size="1" sha1="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"/></game>
+        </datafile>"#;
+    let dat_path = dir.path().join("PSX.dat");
+    File::create(&dat_path).unwrap().write_all(dat.as_bytes()).unwrap();
+
+    let plan = scan_and_plan(
+        in_dir.to_string_lossy().to_string(),
+        out_dir.to_string_lossy().to_string(),
+        FrontendPreset::EsDe,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some(vec![dat_path.to_string_lossy().to_string()]),
+    )
+    .await
+    .expect("scan");
+
+    assert_eq!(plan.games.len(), 1);
+    let g = &plan.games[0];
+    // Fallback source (hash missed) but platform inferred from the title.
+    assert_eq!(g.source, ClassificationSource::Fallback);
+    assert_eq!(g.platform, Platform::Psx, "platform inferred from DAT title");
+    let target = g.discs[0].target_chd_path.to_string_lossy().to_lowercase();
+    assert!(target.contains("roms/psx/"), "goes to psx folder: {}", target);
+}

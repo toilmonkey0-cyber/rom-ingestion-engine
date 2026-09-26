@@ -57,10 +57,12 @@ fn test_revision_tags_stay_separate_games() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![
             (rev1, class("Game", "USA", Some(1))),
             (rev2, class("Game", "USA", Some(1))),
         ],
+        Vec::new(),
     );
     assert_eq!(plan.games.len(), 2, "revisions must not merge");
 }
@@ -84,6 +86,8 @@ async fn test_without_dat_fallback_starts_disabled() {
         None,
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -119,6 +123,8 @@ async fn test_dat_checksum_names_the_fixture() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -170,6 +176,8 @@ async fn test_scan_serial_hit_beats_the_filename() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -214,6 +222,8 @@ async fn test_jev_error_is_visible_and_does_not_merge_discs() {
         None,
         None,
         Some(format!("http://127.0.0.1:{port}/v1/systemone")),
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -247,6 +257,7 @@ async fn test_dat_choice_changes_the_written_chd_path() {
             status: TaskStatus::Pending,
             binary_tracks: vec![input.join("ff7_d1.bin")],
             chdman_command: "createcd".to_string(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: None,
         confidence: 0.7,
@@ -268,12 +279,13 @@ async fn test_dat_choice_changes_the_written_chd_path() {
         FrontendPreset::EsDe,
     );
     let shown = game.discs[0].target_chd_path.clone();
-    assert!(shown.to_string_lossy().replace('\\', "/").ends_with("roms/psx/Final Fantasy VII (USA).chd"));
+    assert!(shown.to_string_lossy().replace('\\', "/").ends_with("ROMs/psx/Final Fantasy VII (USA).chd"));
     let plan = IngestionPlan {
         input_dir: input,
         output_dir: output.clone(),
         preset: FrontendPreset::EsDe,
         games: vec![game],
+        skipped_sources: Vec::new(),
         total_source_bytes: 3,
         estimated_output_bytes: 1,
     };
@@ -346,6 +358,8 @@ async fn test_second_scan_of_unchanged_folder_proposes_zero_converts() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -366,6 +380,8 @@ async fn test_second_scan_of_unchanged_folder_proposes_zero_converts() {
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -398,6 +414,8 @@ async fn test_region_priority_keeps_alternate_out_of_trash() {
         None,
         Some(vec!["USA".to_string(), "Japan".to_string()]),
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -464,6 +482,7 @@ async fn test_trash_stays_off_until_verify_succeeds() {
         input_dir: input.clone(),
         output_dir: output.clone(),
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![PlannedGame {
             id: "bad".to_string(),
             canonical_title: "Bad Header".to_string(),
@@ -477,6 +496,7 @@ async fn test_trash_stays_off_until_verify_succeeds() {
                 status: TaskStatus::Pending,
                 binary_tracks: Vec::new(),
                 chdman_command: "createcd".to_string(),
+                relative_m3u_entry: None,
             }],
             target_m3u_path: None,
             confidence: 1.0,
@@ -510,6 +530,7 @@ async fn test_trash_stays_off_until_verify_succeeds() {
         input_dir: input,
         output_dir: output,
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![PlannedGame {
             id: "good".to_string(),
             canonical_title: "Good Game".to_string(),
@@ -523,6 +544,7 @@ async fn test_trash_stays_off_until_verify_succeeds() {
                 status: TaskStatus::Pending,
                 binary_tracks: vec![good_bin],
                 chdman_command: "createcd".to_string(),
+                relative_m3u_entry: None,
             }],
             target_m3u_path: None,
             confidence: 1.0,
@@ -566,6 +588,7 @@ async fn test_two_games_start_chdman_together() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: "createcd".to_string(),
+            relative_m3u_entry: None,
         });
     }
     let games = discs
@@ -593,6 +616,7 @@ async fn test_two_games_start_chdman_together() {
         input_dir: input.clone(),
         output_dir: output,
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games,
         total_source_bytes: 1,
         estimated_output_bytes: 1,
@@ -627,11 +651,13 @@ fn test_same_region_editions_stay_keepers() {
         PathBuf::from("in"),
         PathBuf::from("out"),
         FrontendPreset::EsDe,
+        None,
         vec![
             (rev1, class("Game", "USA", None)),
             (rev2, class("Game", "USA", None)),
             (japan, class("Game", "Japan", None)),
         ],
+        Vec::new(),
     );
     assert_eq!(plan.games.len(), 3);
     apply_region_priority(&mut plan.games, &["USA".to_string(), "Japan".to_string()]);
@@ -668,6 +694,8 @@ async fn test_shared_bin_referenced_by_two_cues_is_not_trashed() {
         None,
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -714,6 +742,7 @@ async fn test_ledger_records_source_size_serial_version_and_real_command() {
         input_dir: input,
         output_dir: output.clone(),
         preset: FrontendPreset::EsDe,
+        skipped_sources: Vec::new(),
         games: vec![PlannedGame {
             id: "shenmue".to_string(),
             canonical_title: "Shenmue".to_string(),
@@ -727,6 +756,7 @@ async fn test_ledger_records_source_size_serial_version_and_real_command() {
                 status: TaskStatus::Pending,
                 binary_tracks: vec![track],
                 chdman_command: "createdvd".to_string(),
+                relative_m3u_entry: None,
             }],
             target_m3u_path: None,
             confidence: 1.0,
@@ -868,6 +898,8 @@ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,Sonic CD,segacd,USA,T-12345
         Some(dat.to_string_lossy().to_string()),
         None,
         None,
+    None,
+    None,
     )
     .await
     .unwrap();
@@ -938,6 +970,7 @@ async fn test_renamed_title_writes_the_chd_m3u_and_png_shown_before_execute() {
                 status: TaskStatus::Pending,
                 binary_tracks: vec![input.join("a.bin")],
                 chdman_command: "createcd".to_string(),
+                relative_m3u_entry: None,
             },
             PlannedDisc {
                 disc_number: 2,
@@ -946,6 +979,7 @@ async fn test_renamed_title_writes_the_chd_m3u_and_png_shown_before_execute() {
                 status: TaskStatus::Pending,
                 binary_tracks: vec![input.join("b.bin")],
                 chdman_command: "createcd".to_string(),
+                relative_m3u_entry: None,
             },
         ],
         target_m3u_path: Some(output.join("Old Name (USA).m3u")),
@@ -965,17 +999,43 @@ async fn test_renamed_title_writes_the_chd_m3u_and_png_shown_before_execute() {
         FrontendPreset::EsDe,
         Some(MediaOptions::default()),
     );
-    let stem = "New_ Title (USA)";
+    let stem = "New Title (USA)";
+    let stem_sanitized = "New_ Title (USA)";
     assert!(
-        renamed.discs[0].target_chd_path.ends_with(format!(".discs/{stem} (Disc 1).chd").as_str()),
+        renamed.discs[0]
+            .target_chd_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(format!(".discs/{stem} (Disc 1).chd").as_str()),
         "{}",
         renamed.discs[0].target_chd_path.display()
     );
-    assert!(renamed.discs[1].target_chd_path.ends_with(format!(".discs/{stem} (Disc 2).chd").as_str()));
+    assert!(
+        renamed.discs[1]
+            .target_chd_path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(format!(".discs/{stem} (Disc 2).chd").as_str()),
+        "{}",
+        renamed.discs[1].target_chd_path.display()
+    );
     let m3u = renamed.target_m3u_path.clone().expect("multi-disc m3u");
-    assert!(m3u.ends_with(format!("{stem}.m3u").as_str()));
+    assert!(
+        m3u.to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(format!("{stem}.m3u").as_str()),
+        "{}",
+        m3u.display()
+    );
     assert_eq!(renamed.target_media_paths.len(), 1);
-    assert!(renamed.target_media_paths[0].ends_with(format!("{stem}.png").as_str()));
+    assert!(
+        renamed.target_media_paths[0]
+            .to_string_lossy()
+            .replace('\\', "/")
+            .ends_with(format!("covers/{stem_sanitized}.png").as_str()),
+        "media path {}",
+        renamed.target_media_paths[0].display()
+    );
     assert!(!renamed.discs[0].target_chd_path.to_string_lossy().contains("Old Name"));
     renamed.artwork_url = Some(format!("http://127.0.0.1:{port}/cover.png"));
     let shown_chd = renamed.discs[0].target_chd_path.clone();
@@ -986,6 +1046,7 @@ async fn test_renamed_title_writes_the_chd_m3u_and_png_shown_before_execute() {
         output_dir: output,
         preset: FrontendPreset::EsDe,
         games: vec![renamed],
+        skipped_sources: Vec::new(),
         total_source_bytes: 6,
         estimated_output_bytes: 1,
     };

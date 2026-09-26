@@ -38,7 +38,7 @@ fn test_preset_media_path_resolution() {
         "Metal Gear Solid (USA)",
         MediaType::BoxArt,
     );
-    assert_eq!(esde_path, PathBuf::from("E:/roms/psx/media/covers/Metal Gear Solid (USA).png"));
+    assert_eq!(esde_path, PathBuf::from("E:/ROMs/psx/media/covers/Metal Gear Solid (USA).png"));
 }
 
 #[test]
@@ -92,7 +92,7 @@ fn test_preset_media_path_resolution_all_presets_and_types() {
         "Shenmue (USA)",
         MediaType::Screenshots,
     );
-    assert_eq!(esde_snap, PathBuf::from("E:/games/roms/dreamcast/media/screenshots/Shenmue (USA).png"));
+    assert_eq!(esde_snap, PathBuf::from("E:/games/ROMs/dreamcast/media/screenshots/Shenmue (USA).png"));
 
     let esde_title = resolve_preset_media_path(
         &out,
@@ -101,7 +101,7 @@ fn test_preset_media_path_resolution_all_presets_and_types() {
         "Shenmue (USA)",
         MediaType::TitleScreens,
     );
-    assert_eq!(esde_title, PathBuf::from("E:/games/roms/dreamcast/media/titlescreens/Shenmue (USA).png"));
+    assert_eq!(esde_title, PathBuf::from("E:/games/ROMs/dreamcast/media/titlescreens/Shenmue (USA).png"));
 
     // Custom
     let custom_path = resolve_preset_media_path(
@@ -222,6 +222,7 @@ fn test_planned_game_model_with_media() {
             status: TaskStatus::Pending,
             binary_tracks: Vec::new(),
             chdman_command: String::new(),
+            relative_m3u_entry: None,
         }],
         target_m3u_path: Some(PathBuf::from("out/roms/psx/Final Fantasy VII (USA).m3u")),
         confidence: 0.99,
@@ -487,9 +488,9 @@ fn test_resolve_media_paths_for_game_options() {
         &opts_all,
     );
     assert_eq!(paths.len(), 3);
-    assert_eq!(paths[0], PathBuf::from("E:/games/roms/psx/media/covers/Final Fantasy VII (USA).png"));
-    assert_eq!(paths[1], PathBuf::from("E:/games/roms/psx/media/screenshots/Final Fantasy VII (USA).png"));
-    assert_eq!(paths[2], PathBuf::from("E:/games/roms/psx/media/titlescreens/Final Fantasy VII (USA).png"));
+    assert_eq!(paths[0], PathBuf::from("E:/games/ROMs/psx/media/covers/Final Fantasy VII (USA).png"));
+    assert_eq!(paths[1], PathBuf::from("E:/games/ROMs/psx/media/screenshots/Final Fantasy VII (USA).png"));
+    assert_eq!(paths[2], PathBuf::from("E:/games/ROMs/psx/media/titlescreens/Final Fantasy VII (USA).png"));
 
     // Boxart only (default)
     let opts_boxart = MediaOptions::default();

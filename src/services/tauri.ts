@@ -9,7 +9,25 @@ import {
   MediaOptions,
   PlannedGame,
   TrashOutcome,
+  CustomPresetConfig,
+  FinishLibrarySummary,
+  ArtworkProgressEvent,
+  MigrationPlan,
+  MigrationSummary,
+  MigrationProgressEvent,
+  WatchStatusEvent,
+  Platform,
 } from '../types/plan';
+
+export const DEFAULT_CUSTOM_PRESET: CustomPresetConfig = {
+  psx: 'roms/psx',
+  saturn: 'roms/saturn',
+  dreamcast: 'roms/dreamcast',
+  sega_cd: 'roms/segacd',
+  pce_cd: 'roms/pcenginecd',
+  unknown: 'roms/unknown',
+  multidisc_subfolder: '.discs',
+};
 
 export const isTauri = (): boolean => {
   return (
@@ -25,7 +43,9 @@ export async function scanAndPlanApi(
   apiKey?: string,
   mediaOptions?: MediaOptions,
   datPath?: string,
-  regionPriority?: string[]
+  regionPriority?: string[],
+  customConfig?: CustomPresetConfig | null,
+  redumpDatPaths?: string[] | null
 ): Promise<IngestionPlan> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -38,6 +58,11 @@ export async function scanAndPlanApi(
       datPath: datPath?.trim() ? datPath.trim() : null,
       regionPriority: regionPriority && regionPriority.length > 0 ? regionPriority : null,
       jevBaseUrl: null,
+      customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+      redumpDatPaths:
+        redumpDatPaths && redumpDatPaths.length > 0
+          ? redumpDatPaths.map((p) => p.trim()).filter(Boolean)
+          : null,
     });
   }
 
@@ -49,6 +74,12 @@ export async function scanAndPlanApi(
     preset,
     total_source_bytes: 5368709120, // 5.0 GB
     estimated_output_bytes: 2952790016, // 2.75 GB (~45% savings)
+    skipped_sources: [
+      {
+        path: 'D:/Roms/Incoming/Broken Game (USA).cue',
+        reason: 'Referenced track not found: Broken Game (USA).bin',
+      },
+    ],
     games: [
       {
         id: 'game-mock-1',
@@ -160,6 +191,7 @@ export async function executePlanApi(
 
     for (const disc of game.discs) {
       trashFiles.push(disc.source_descriptor);
+      trashFiles.push(disc.source_descriptor.replace(/\.(cue|gdi)$/i, '.bin'));
       for (let p = 20; p <= 100; p += 40) {
         await new Promise((r) => setTimeout(r, 120));
         if (onProgress) {
@@ -191,10 +223,18 @@ export async function executePlanApi(
   };
 }
 
-export async function trashSourceFilesApi(sourceFiles: string[], inputDir: string): Promise<TrashOutcome> {
+export async function trashSourceFilesApi(
+  sourceFiles: string[],
+  baseDir?: string | null,
+  allowPermanent?: boolean
+): Promise<TrashOutcome> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<TrashOutcome>('trash_source_files', { sourceFiles, inputDir });
+    return await invoke<TrashOutcome>('trash_source_files', {
+      sourceFiles,
+      baseDir: baseDir?.trim() ? baseDir.trim() : null,
+      allowPermanent: allowPermanent === true,
+    });
   }
 
   await new Promise((r) => setTimeout(r, 400));
@@ -395,4 +435,274 @@ export async function setCustomChdmanPathApi(path: string): Promise<ChdmanStatus
     version: '0.268',
   };
   return { ...simulatedChdmanStatus };
+}
+
+export async function finishLibraryApi(
+  plan: IngestionPlan,
+  downloadArtwork: boolean,
+  onProgress?: (event: ArtworkProgressEvent) => void
+): Promise<FinishLibrarySummary> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+
+    let unlisten: (() => void) | undefined;
+    if (onProgress) {
+      unlisten = await listen<ArtworkProgressEvent>('artwork-progress', (e) => {
+        onProgress(e.payload);
+      });
+    }
+
+    try {
+      return await invoke<FinishLibrarySummary>('finish_library', { plan, downloadArtwork });
+    } finally {
+      if (unlisten) unlisten();
+    }
+  }
+
+  // Browser simulation: fake staggered progress then a summary.
+  const games = plan.games.filter((g) => g.enabled);
+  for (let i = 0; i < games.length; i++) {
+    await new Promise((r) => setTimeout(r, 120));
+    if (onProgress) {
+      onProgress({
+        game_id: games[i].id,
+        title: games[i].canonical_title,
+        status: i === games.length - 1 ? 'failed' : 'done',
+        completed: i + 1,
+        total: games.length,
+      });
+    }
+  }
+  return {
+    gamelists_written: plan.preset === 'esde' || plan.preset === 'batocera' ? 1 : 0,
+    artwork_downloaded: Math.max(games.length - 1, 0),
+    artwork_skipped: 0,
+    artwork_failed: games.length > 0 ? 1 : 0,
+  };
+}
+
+export async function planMigrationApi(
+  root: string,
+  sourcePreset: FrontendPreset,
+  targetPreset: FrontendPreset,
+  customConfig?: CustomPresetConfig | null
+): Promise<MigrationPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<MigrationPlan>('plan_migration', {
+      root,
+      sourcePreset,
+      targetPreset,
+      customConfig: targetPreset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+    });
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  return {
+    root,
+    source_preset: sourcePreset,
+    target_preset: targetPreset,
+    games: 2,
+    items: [
+      { kind: 'chd', source: `${root}/Roms/PS/.discs/Game (Disc 1).chd`, target: `${root}/roms/psx/.discs/Game (Disc 1).chd` },
+      { kind: 'playlist', source: `${root}/Roms/PS/Game.m3u`, target: `${root}/roms/psx/Game.m3u` },
+    ],
+    playlist_rewrites: [],
+  };
+}
+
+export async function executeMigrationApi(
+  plan: MigrationPlan,
+  onProgress?: (event: MigrationProgressEvent) => void
+): Promise<MigrationSummary> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    const { listen } = await import('@tauri-apps/api/event');
+    let unlisten: (() => void) | undefined;
+    if (onProgress) {
+      unlisten = await listen<MigrationProgressEvent>('migration-progress', (e) => {
+        onProgress(e.payload);
+      });
+    }
+    try {
+      return await invoke<MigrationSummary>('execute_migration', { plan });
+    } finally {
+      if (unlisten) unlisten();
+    }
+  }
+  await new Promise((r) => setTimeout(r, 500));
+  return { files_moved: plan.items.length, playlists_rewritten: plan.playlist_rewrites.length, gamelists_written: 1, skipped_existing: [] };
+}
+
+/** redump.org system slugs for one-click DAT downloads (verified live). */
+export const REDUMP_DAT_SLUGS: { platform: Platform; label: string; slug: string }[] = [
+  { platform: 'psx', label: 'Sony PlayStation', slug: 'psx' },
+  { platform: 'saturn', label: 'Sega Saturn', slug: 'ss' },
+  { platform: 'dreamcast', label: 'Sega Dreamcast', slug: 'dc' },
+  { platform: 'segacd', label: 'Sega CD / Mega-CD', slug: 'mcd' },
+  { platform: 'pcecd', label: 'PC Engine CD / TurboGrafx-CD', slug: 'pce' },
+];
+
+export async function downloadRedumpDatsApi(
+  destDir: string,
+  slugs: string[],
+  onProgress?: (message: string) => void
+): Promise<string[]> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string[]>('download_redump_dats', { destDir, slugs });
+  }
+  for (const slug of slugs) {
+    onProgress?.(`Fetching ${slug}.dat (simulated)...`);
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return slugs.map((s) => `${destDir}/Redump_${s}.dat`);
+}
+
+export async function readImageFileApi(path: string): Promise<string | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string | null>('read_image_file', { path });
+  }
+  return null;
+}
+
+export async function configureWatchFolderApi(
+  inputDir: string,
+  outputDir: string,
+  preset: FrontendPreset,
+  customConfig: CustomPresetConfig | null,
+  enabled: boolean
+): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string>('configure_watch_folder', {
+      inputDir,
+      outputDir,
+      preset,
+      customConfig: preset === 'custom' ? customConfig ?? DEFAULT_CUSTOM_PRESET : null,
+      enabled,
+    });
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  return enabled ? 'watching' : 'stopped';
+}
+
+export async function listenWatchStatusApi(
+  onStatus: (event: WatchStatusEvent) => void
+): Promise<() => void> {
+  const { listen } = await import('@tauri-apps/api/event');
+  const unlisten = await listen<WatchStatusEvent>('watch-status', (e) => {
+    onStatus(e.payload);
+  });
+  return unlisten;
+}
+
+export async function setGamePlatformApi(
+  plan: IngestionPlan,
+  gameId: string,
+  platform: Platform
+): Promise<IngestionPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<IngestionPlan>('set_game_platform', { plan, gameId, platform });
+  }
+  // Browser simulation: swap platform and rewrite the platform folder in paths.
+  const folderFor: Record<Platform, string> = {
+    psx: 'roms/psx',
+    saturn: 'roms/saturn',
+    dreamcast: 'roms/dreamcast',
+    segacd: 'roms/segacd',
+    pcecd: 'roms/pcenginecd',
+    unknown: 'roms/unknown',
+  };
+  return {
+    ...plan,
+    games: plan.games.map((g) =>
+      g.id !== gameId
+        ? g
+        : {
+            ...g,
+            platform,
+            discs: g.discs.map((d) => ({
+              ...d,
+              target_chd_path: d.target_chd_path.replace(/\/[^\/]+\//, '/' + folderFor[platform] + '/'),
+            })),
+          }
+    ),
+  };
+}
+
+export async function setGameTitleApi(
+  plan: IngestionPlan,
+  gameId: string,
+  title: string
+): Promise<IngestionPlan> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<IngestionPlan>('set_game_title', { plan, gameId, title });
+  }
+  return {
+    ...plan,
+    games: plan.games.map((g) => (g.id === gameId ? { ...g, canonical_title: title } : g)),
+  };
+}
+
+export interface VolumeInfo {
+  free_bytes: number;
+  total_bytes: number;
+}
+
+export async function getVolumeInfoApi(path: string): Promise<VolumeInfo | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<VolumeInfo>('get_volume_info', { path });
+  }
+  return null;
+}
+
+export interface AppSettingsPayload {
+  input_dir?: string | null;
+  output_dir?: string | null;
+  preset?: FrontendPreset | null;
+  custom_config?: CustomPresetConfig | null;
+  redump_dats?: string[] | null;
+  watch_enabled?: boolean | null;
+}
+
+export async function loadAppSettings(): Promise<AppSettingsPayload | null> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<AppSettingsPayload>('get_app_settings');
+  }
+  return null;
+}
+
+export async function saveAppSettings(settings: AppSettingsPayload): Promise<void> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    await invoke('set_app_settings', { settings });
+  }
+}
+
+/** Native pickers (no-ops returning null in browser mode). */
+export async function pickDirectory(): Promise<string | null> {
+  if (isTauri()) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    return (await open({ directory: true, multiple: false })) as string | null;
+  }
+  return null;
+}
+
+export async function pickFiles(extensions: string[]): Promise<string[] | null> {
+  if (isTauri()) {
+    const { open } = await import('@tauri-apps/plugin-dialog');
+    const result = await open({
+      multiple: true,
+      filters: [{ name: extensions.join('/'), extensions }],
+    });
+    if (result === null) return null;
+    return Array.isArray(result) ? result : [result];
+  }
+  return null;
 }

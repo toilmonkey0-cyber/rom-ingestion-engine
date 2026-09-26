@@ -69,6 +69,9 @@ pub struct PlannedDisc {
     pub disc_number: u8,
     pub source_descriptor: PathBuf,
     pub target_chd_path: PathBuf,
+    /// Forward-slash playlist entry for this disc, relative to the M3U location.
+    #[serde(default)]
+    pub relative_m3u_entry: Option<String>,
     pub status: TaskStatus,
     /// Tracks resolved at scan time. Empty means execute may re-read the cue.
     #[serde(default)]
@@ -126,12 +129,23 @@ pub struct PlannedGame {
     pub target_media_paths: Vec<PathBuf>,
 }
 
+/// A disc discovered during scanning that was excluded from the plan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SkippedSource {
+    pub path: PathBuf,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IngestionPlan {
     pub input_dir: PathBuf,
     pub output_dir: PathBuf,
     pub preset: FrontendPreset,
     pub games: Vec<PlannedGame>,
+    /// Discs found during scanning but excluded (missing tracks, references
+    /// escaping the scan root, unreadable sheets). Surfaced for the dry-run UI.
+    #[serde(default)]
+    pub skipped_sources: Vec<SkippedSource>,
     pub total_source_bytes: u64,
     pub estimated_output_bytes: u64,
 }
@@ -171,4 +185,45 @@ pub struct ExecutionSummary {
     pub failed_game_ids: Vec<String>,
     #[serde(default)]
     pub partial_game_ids: Vec<String>,
+}
+
+/// Status of one game's artwork lookup during the Finish Line phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtworkStatus {
+    Downloading,
+    Done,
+    Skipped,
+    Failed,
+}
+
+/// Emitted per game while box art is being fetched and written.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ArtworkProgressEvent {
+    pub game_id: String,
+    pub title: String,
+    pub status: ArtworkStatus,
+    pub completed: usize,
+    pub total: usize,
+}
+
+/// Outcome of the Finish Line phase (artwork + playlist metadata).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FinishLibrarySummary {
+    pub gamelists_written: usize,
+    pub artwork_downloaded: usize,
+    pub artwork_skipped: usize,
+    pub artwork_failed: usize,
+    /// Paths of artwork present on disk after the phase (downloaded or
+    /// previously existing), for UI preview.
+    #[serde(default)]
+    pub artwork_paths: Vec<String>,
+}
+
+/// Emitted per file while a preset migration is being executed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MigrationProgressEvent {
+    pub message: String,
+    pub completed: usize,
+    pub total: usize,
 }

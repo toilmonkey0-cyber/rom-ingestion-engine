@@ -2,12 +2,15 @@
 pub mod chdman;
 pub mod classifier;
 pub mod commands;
+pub mod metadata;
+pub mod migrator;
 pub mod models;
 pub mod library;
 pub mod organizer;
 pub mod paths;
 pub mod plan_builder;
 pub mod scanner;
+pub mod watch;
 
 pub use chdman::*;
 pub use classifier::jev::*;
@@ -18,6 +21,7 @@ pub use plan_builder::*;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             commands::scan_and_plan,
             commands::execute_plan,
@@ -30,6 +34,17 @@ pub fn run() {
             commands::rename_planned_game,
             commands::accept_cue_rewrite,
             commands::deploy_verified_library,
+            commands::finish_library,
+            commands::plan_migration,
+            commands::execute_migration,
+            commands::download_redump_dats,
+            commands::read_image_file,
+            commands::configure_watch_folder,
+            commands::set_game_platform,
+            commands::set_game_title,
+            commands::get_app_settings,
+            commands::set_app_settings,
+            commands::get_volume_info,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
