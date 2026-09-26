@@ -25,6 +25,16 @@ export interface PlannedGame {
   source: ClassificationSource;
   enabled: boolean;
   needs_review: boolean;
+  status_note?: string | null;
+  role?: string;
+  artwork_url?: string | null;
+  target_media_paths?: string[];
+}
+
+export interface MediaOptions {
+  download_boxart: boolean;
+  download_screenshots: boolean;
+  download_titles: boolean;
 }
 
 export interface IngestionPlan {
@@ -58,6 +68,13 @@ export interface ExecutionSummary {
   source_files_to_trash: string[];
   total_source_bytes: number;
   total_output_bytes: number;
+  failed_game_ids?: string[];
+  partial_game_ids?: string[];
+}
+
+export interface TrashOutcome {
+  count: number;
+  bytes: number;
 }
 
 export type ChdmanSource = 'system_path' | 'managed_directory' | 'custom_path' | 'missing';

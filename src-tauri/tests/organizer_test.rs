@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use rom_ingest_core::models::{ClassificationSource, FrontendPreset, GameClassification, Platform};
 use rom_ingest_core::organizer::m3u::*;
 use rom_ingest_core::organizer::presets::*;
@@ -219,6 +219,31 @@ fn test_title_and_region_formatting_edge_cases() {
         paths_multi_no_disc_num.m3u_path,
         Some(PathBuf::from("E:/roms/psx/Grand Theft Auto 2 (USA).m3u"))
     );
+}
+
+#[test]
+fn test_titles_with_illegal_characters_stay_inside_the_output_folder() {
+    let paths = resolve_target_paths(
+        Path::new("E:/out"),
+        FrontendPreset::EsDe,
+        Platform::Psx,
+        "Castlevania: Symphony of the Night",
+        "USA",
+        false,
+        Some(1),
+        Some(1),
+    );
+    let name = paths
+        .chd_path
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    assert_eq!(name, "Castlevania_ Symphony of the Night (USA).chd");
+    assert!(rom_ingest_core::paths::is_lexically_within(
+        Path::new("E:/out"),
+        &paths.chd_path
+    ));
 }
 
 #[test]

@@ -43,10 +43,12 @@ fn generate_game_id(platform: Platform, title: &str, index: usize) -> String {
 }
 
 /// Internal temporary representation of a disc during planning.
+#[derive(Clone)]
 struct IntermediateDisc {
     disc_number: u8,
     total_discs: Option<u8>,
     source_descriptor: PathBuf,
+    binary_tracks: Vec<PathBuf>,
 }
 
 /// Builds an `IngestionPlan` from classified disc fingerprints with default media options (boxart enabled).
@@ -78,14 +80,76 @@ pub fn build_ingestion_plan_with_options(
     items: Vec<(DiscFingerprint, GameClassification)>,
     media_options: &MediaOptions,
 ) -> IngestionPlan {
-    // 1. Group items by (platform, canonical_title.to_lowercase())
-    let mut groups: Vec<((Platform, String), Vec<(DiscFingerprint, GameClassification)>)> =
-        Vec::new();
+    let mut planned_games = Vec::new();
+    let mut used_ids = HashSet::new();
+    let mut total_source_bytes: u64 = 0;
+    let mut ok_items = Vec::new();
 
     for (fingerprint, classification) in items {
+        if fingerprint.scan_error.is_some() {
+            total_source_bytes += fingerprint.total_bytes;
+            let base_id = generate_game_id(classification.platform, &classification.canonical_title, planned_games.len());
+            let mut game_id = base_id.clone();
+            let mut counter = 2;
+            while !used_ids.insert(game_id.clone()) {
+                game_id = format!("{}-{}", base_id, counter);
+                counter += 1;
+            }
+            let command = crate::paths::chdman_command_for_input(&fingerprint.primary_file)
+                .unwrap_or("createcd")
+                .to_string();
+            let paths = resolve_target_paths(
+                &output_dir,
+                preset,
+                classification.platform,
+                &classification.canonical_title,
+                &classification.region,
+                false,
+                Some(1),
+                Some(1),
+            );
+            planned_games.push(PlannedGame {
+                id: game_id,
+                canonical_title: classification.canonical_title.clone(),
+                platform: classification.platform,
+                region: classification.region.clone(),
+                is_multidisc: false,
+                discs: vec![PlannedDisc {
+                    disc_number: 1,
+                    source_descriptor: fingerprint.primary_file.clone(),
+                    target_chd_path: paths.chd_path,
+                    status: TaskStatus::Failed,
+                    binary_tracks: fingerprint.binary_tracks.clone(),
+                    chdman_command: command,
+                }],
+                target_m3u_path: None,
+                confidence: classification.confidence,
+                source: classification.source,
+                enabled: false,
+                needs_review: true,
+                status_note: None,
+        role: String::new(),
+        artwork_url: None,
+                target_media_paths: Vec::new(),
+            });
+        } else {
+            ok_items.push((fingerprint, classification));
+        }
+    }
+
+    // Group playable discs by release identity. Broken descriptors stay out of this map.
+    let mut groups: Vec<((Platform, String, String, String), Vec<(DiscFingerprint, GameClassification)>)> =
+        Vec::new();
+
+    for (fingerprint, classification) in ok_items {
+        let edition = crate::classifier::redump::extract_edition_tag(
+            &fingerprint.primary_file.to_string_lossy(),
+        );
         let key = (
             classification.platform,
             classification.canonical_title.trim().to_lowercase(),
+            classification.region.trim().to_lowercase(),
+            edition,
         );
         if let Some((_, group)) = groups.iter_mut().find(|(k, _)| *k == key) {
             group.push((fingerprint, classification));
@@ -94,12 +158,8 @@ pub fn build_ingestion_plan_with_options(
         }
     }
 
-    let mut planned_games = Vec::new();
-    let mut used_ids = HashSet::new();
-    let mut total_source_bytes: u64 = 0;
-
     // 2. Build planned games
-    for (group_idx, ((platform, _), group)) in groups.into_iter().enumerate() {
+    for (group_idx, ((platform, _, _, _), group)) in groups.into_iter().enumerate() {
         let is_multidisc = group.len() > 1 || group.iter().any(|(_, c)| c.is_multidisc);
 
         // Pick best classification for canonical metadata
@@ -162,6 +222,7 @@ pub fn build_ingestion_plan_with_options(
                 disc_number: disc_num,
                 total_discs: class.total_discs,
                 source_descriptor: fp.primary_file.clone(),
+                binary_tracks: fp.binary_tracks.clone(),
             });
         }
 
@@ -172,78 +233,98 @@ pub fn build_ingestion_plan_with_options(
                 .then_with(|| a.source_descriptor.cmp(&b.source_descriptor))
         });
 
-        // If any disc numbers are missing (0) or duplicates exist, assign sequential 1..N
+        // Missing or duplicate disc numbers are a different release or a second copy.
+        // Leave them as separate games. Do not invent a 1..N order.
         let has_zero = temp_discs.iter().any(|d| d.disc_number == 0);
         let mut disc_num_set = HashSet::new();
         let has_duplicates = temp_discs.iter().any(|d| !disc_num_set.insert(d.disc_number));
+        let split_ambiguous = temp_discs.len() > 1 && (has_zero || has_duplicates);
 
-        if is_multidisc && (has_zero || has_duplicates) {
-            for (idx, d) in temp_discs.iter_mut().enumerate() {
-                d.disc_number = (idx + 1) as u8;
+        let releases: Vec<Vec<IntermediateDisc>> = if split_ambiguous {
+            temp_discs
+                .into_iter()
+                .map(|mut disc| {
+                    if disc.disc_number == 0 {
+                        disc.disc_number = 1;
+                    }
+                    vec![disc]
+                })
+                .collect()
+        } else {
+            vec![temp_discs]
+        };
+
+        for release in releases {
+            let release_is_multidisc = !split_ambiguous && is_multidisc && release.len() > 1;
+            let release_needs_review = needs_review || split_ambiguous;
+            let total_discs = Some(release.len() as u8);
+            let mut planned_discs = Vec::new();
+            let mut target_m3u_path = None;
+
+            for disc in &release {
+                let target_paths = resolve_target_paths(
+                    &output_dir,
+                    preset,
+                    platform,
+                    &canonical_title,
+                    &region,
+                    release_is_multidisc,
+                    Some(disc.disc_number),
+                    disc.total_discs.or(total_discs),
+                );
+
+                if release_is_multidisc && target_m3u_path.is_none() {
+                    target_m3u_path = target_paths.m3u_path;
+                }
+
+                let chdman_command = crate::paths::chdman_command_for_input(&disc.source_descriptor)
+                    .unwrap_or("createcd")
+                    .to_string();
+                planned_discs.push(PlannedDisc {
+                    disc_number: disc.disc_number,
+                    source_descriptor: disc.source_descriptor.clone(),
+                    target_chd_path: target_paths.chd_path,
+                    status: TaskStatus::Pending,
+                    binary_tracks: disc.binary_tracks.clone(),
+                    chdman_command,
+                });
             }
-        }
 
-        // Resolve paths and build PlannedDisc entries
-        let total_discs = Some(temp_discs.len() as u8);
-        let mut planned_discs = Vec::new();
-        let mut target_m3u_path = None;
+            let base_id = generate_game_id(platform, &canonical_title, group_idx);
+            let mut game_id = base_id.clone();
+            let mut counter = 2;
+            while !used_ids.insert(game_id.clone()) {
+                game_id = format!("{}-{}", base_id, counter);
+                counter += 1;
+            }
 
-        for disc in &temp_discs {
-            let target_paths = resolve_target_paths(
+            let target_media_paths = resolve_media_paths_for_game(
                 &output_dir,
                 preset,
                 platform,
                 &canonical_title,
                 &region,
-                is_multidisc,
-                Some(disc.disc_number),
-                disc.total_discs.or(total_discs),
+                media_options,
             );
 
-            if is_multidisc && target_m3u_path.is_none() {
-                target_m3u_path = target_paths.m3u_path;
-            }
-
-            planned_discs.push(PlannedDisc {
-                disc_number: disc.disc_number,
-                source_descriptor: disc.source_descriptor.clone(),
-                target_chd_path: target_paths.chd_path,
-                status: TaskStatus::Pending,
+            planned_games.push(PlannedGame {
+                id: game_id,
+                canonical_title: canonical_title.clone(),
+                platform,
+                region: region.clone(),
+                is_multidisc: release_is_multidisc,
+                discs: planned_discs,
+                target_m3u_path,
+                confidence: avg_confidence,
+                source,
+                enabled: !(release_needs_review && source == ClassificationSource::Fallback),
+                needs_review: release_needs_review,
+                status_note: None,
+        role: String::new(),
+        artwork_url: None,
+                target_media_paths,
             });
         }
-
-        let base_id = generate_game_id(platform, &canonical_title, group_idx);
-        let mut game_id = base_id.clone();
-        let mut counter = 2;
-        while !used_ids.insert(game_id.clone()) {
-            game_id = format!("{}-{}", base_id, counter);
-            counter += 1;
-        }
-
-        let target_media_paths = resolve_media_paths_for_game(
-            &output_dir,
-            preset,
-            platform,
-            &canonical_title,
-            &region,
-            media_options,
-        );
-
-        planned_games.push(PlannedGame {
-            id: game_id,
-            canonical_title,
-            platform,
-            region,
-            is_multidisc,
-            discs: planned_discs,
-            target_m3u_path,
-            confidence: avg_confidence,
-            source,
-            enabled: true,
-            needs_review,
-            artwork_url: None,
-            target_media_paths,
-        });
     }
 
     // Estimated output bytes: approximately 60% of source size for CD/GD-ROM compression

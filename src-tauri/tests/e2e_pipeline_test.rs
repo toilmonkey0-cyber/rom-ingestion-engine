@@ -75,11 +75,21 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
         .write_all(cue2_content.as_bytes())
         .unwrap();
 
+    let dat_path = dir.path().join("user.dat");
+    std::fs::write(
+        &dat_path,
+        "sha1,title,platform,region,disc_number,total_discs\n933ec98e7c7ff0a8399a454b8cffd222471ff9e7,Final Fantasy VII (USA) (Disc 1),psx,USA,1,2\n13e555c970aea8babfc7090bd65636767fa5946a,Final Fantasy VII (USA) (Disc 2),psx,USA,2,2\n",
+    )
+    .unwrap();
+
     // 2. Run scan_and_plan with AnbernicStock preset
     let plan = scan_and_plan(
         input_dir.to_string_lossy().to_string(),
         output_dir.to_string_lossy().to_string(),
         FrontendPreset::AnbernicStock,
+        None,
+        None,
+        Some(dat_path.to_string_lossy().to_string()),
         None,
         None,
     )
@@ -193,9 +203,9 @@ FILE "Final Fantasy VII (USA) (Disc 1) (Track 2).bin" BINARY
     assert!(cue2_path.exists());
     assert!(bin2_path.exists());
 
-    let trashed_count = trash_source_files(summary.source_files_to_trash)
+    let trashed = trash_source_files(summary.source_files_to_trash, input_dir.to_string_lossy().to_string())
         .expect("trash_source_files should succeed");
-    assert_eq!(trashed_count, 5);
+    assert_eq!(trashed.count, 5);
 
     // Verify source dumps have been safely removed from input directory
     assert!(!cue1_path.exists());
@@ -244,9 +254,17 @@ async fn test_e2e_pipeline_multiplatform_mixed_presets() {
         FrontendPreset::OnionOs,
         None,
         None,
+        None,
+        None,
+        None,
     )
     .await
     .expect("mixed scan_and_plan");
+
+    let mut plan = plan;
+    for game in &mut plan.games {
+        game.enabled = true;
+    }
 
     assert_eq!(plan.games.len(), 2);
 
@@ -405,9 +423,17 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
         FrontendPreset::Batocera,
         None,
         None,
+        None,
+        None,
+        None,
     )
     .await
     .expect("scan_and_plan");
+
+    let mut plan = plan;
+    for game in &mut plan.games {
+        game.enabled = true;
+    }
 
     assert_eq!(plan.games.len(), 1);
     assert_eq!(plan.games[0].canonical_title, "Crash Bandicoot");
@@ -437,8 +463,12 @@ async fn test_e2e_pipeline_with_downloader_and_status_integration() {
     assert!(progress.iter().any(|p| p.progress == 100.0));
 
     // Trash source files
-    let trashed = trash_source_files(summary.source_files_to_trash).expect("trash source files");
-    assert_eq!(trashed, 2);
+    let trashed = trash_source_files(
+        summary.source_files_to_trash,
+        roms_in.to_string_lossy().to_string(),
+    )
+    .expect("trash source files");
+    assert_eq!(trashed.count, 2);
     assert!(!cue_path.exists());
     assert!(!bin_path.exists());
 

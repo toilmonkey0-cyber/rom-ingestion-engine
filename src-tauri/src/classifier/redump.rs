@@ -15,6 +15,8 @@ pub struct RedumpEntry {
     pub is_multidisc: bool,
     pub disc_number: Option<u8>,
     pub total_discs: Option<u8>,
+    #[serde(default)]
+    pub serial: Option<String>,
 }
 
 impl RedumpEntry {
@@ -37,6 +39,7 @@ impl RedumpEntry {
 #[derive(Debug, Clone, Default)]
 pub struct RedumpDatabase {
     entries: HashMap<String, RedumpEntry>,
+    by_serial: HashMap<String, RedumpEntry>,
 }
 
 impl RedumpDatabase {
@@ -44,6 +47,7 @@ impl RedumpDatabase {
     pub fn new() -> Self {
         Self {
             entries: HashMap::new(),
+            by_serial: HashMap::new(),
         }
     }
 
@@ -81,8 +85,20 @@ impl RedumpDatabase {
                 is_multidisc,
                 disc_number,
                 total_discs,
+                serial: None,
             },
         );
+    }
+
+    pub fn insert_serial(&mut self, serial: &str, entry: RedumpEntry) {
+        self.by_serial
+            .insert(serial.trim().to_ascii_uppercase(), entry);
+    }
+
+    pub fn lookup_serial(&self, serial: &str) -> Option<GameClassification> {
+        self.by_serial
+            .get(&serial.trim().to_ascii_uppercase())
+            .map(|entry| entry.to_game_classification())
     }
 
     /// Inserts a `RedumpEntry` for the given SHA-1 hash.
@@ -185,7 +201,7 @@ impl RedumpDatabase {
     }
 
     fn process_row(&mut self, fields: &[String], headers: Option<&[String]>) -> bool {
-        let (sha1_idx, title_idx, platform_idx, region_idx, multidisc_idx, disc_idx, total_discs_idx) = match headers {
+        let (sha1_idx, title_idx, platform_idx, region_idx, multidisc_idx, disc_idx, total_discs_idx, serial_idx) = match headers {
             Some(cols) => {
                 let mut sha1 = None;
                 let mut title = None;
@@ -194,6 +210,7 @@ impl RedumpDatabase {
                 let mut multidisc = None;
                 let mut disc = None;
                 let mut total_discs = None;
+                let mut serial_idx = None;
 
                 for (i, col) in cols.iter().enumerate() {
                     match col.as_str() {
@@ -204,6 +221,7 @@ impl RedumpDatabase {
                         "is_multidisc" | "multidisc" | "multi_disc" => multidisc = Some(i),
                         "disc_number" | "disc" | "disc_no" | "disc_num" => disc = Some(i),
                         "total_discs" | "discs" | "total_disc" | "disc_count" => total_discs = Some(i),
+                        "serial" | "product" | "product_no" | "catalog" => serial_idx = Some(i),
                         _ => {}
                     }
                 }
@@ -216,9 +234,10 @@ impl RedumpDatabase {
                     multidisc,
                     disc,
                     total_discs,
+                    serial_idx,
                 )
             }
-            None => (0, 1, Some(2), Some(3), Some(4), Some(5), Some(6)),
+            None => (0, 1, Some(2), Some(3), Some(4), Some(5), Some(6), None),
         };
 
         let raw_sha1 = match fields.get(sha1_idx) {
@@ -281,6 +300,19 @@ impl RedumpDatabase {
             disc_number,
             total_discs,
         );
+
+        if let Some(serial) = serial_idx
+            .and_then(|idx| fields.get(idx))
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+        {
+            if let Some(mut entry) = self.get_entry(raw_sha1).cloned() {
+                entry.serial = Some(serial.clone());
+                let key = raw_sha1.trim().to_ascii_lowercase();
+                self.entries.insert(key, entry.clone());
+                self.insert_serial(&serial, entry);
+            }
+        }
 
         true
     }
@@ -677,6 +709,21 @@ static TAG_RE: LazyLock<Regex> = LazyLock::new(|| {
 static BRACKET_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"\s*\[[^\]]*\]"#).unwrap()
 });
+
+static EDITION_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)\((rev(?:ision)?\s*[^)]+|v\d[^)]*|demo|beta|proto(?:type)?|sample|unl|alt(?:ernate)?\s*\d*)\)"#).unwrap()
+});
+
+/// Revision and edition tags that must stay part of release identity.
+/// Display titles may drop them. The group key must not.
+pub fn extract_edition_tag(title: &str) -> String {
+    let mut tags: Vec<String> = EDITION_RE
+        .captures_iter(title)
+        .filter_map(|caps| caps.get(1).map(|m| m.as_str().to_ascii_lowercase()))
+        .collect();
+    tags.sort();
+    tags.join("|")
+}
 
 /// Extracts disc number and total discs from a title string if present.
 pub fn extract_disc_info(title: &str) -> (Option<u8>, Option<u8>) {

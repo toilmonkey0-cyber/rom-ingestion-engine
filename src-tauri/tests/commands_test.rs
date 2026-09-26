@@ -21,6 +21,9 @@ async fn test_scan_and_plan_invalid_directory() {
         FrontendPreset::EsDe,
         None,
         None,
+        None,
+        None,
+        None,
     )
     .await;
     assert!(result.is_err());
@@ -49,6 +52,9 @@ async fn test_scan_and_plan_success_with_fallback() {
         psx_dir.to_string_lossy().to_string(),
         out_dir.to_string_lossy().to_string(),
         FrontendPreset::EsDe,
+        None,
+        None,
+        None,
         None,
         None,
     )
@@ -89,6 +95,8 @@ async fn test_execute_plan_single_disc_success() {
         source_descriptor: cue_path.clone(),
         target_chd_path: target_chd.clone(),
         status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
     };
 
     let game = PlannedGame {
@@ -103,6 +111,8 @@ async fn test_execute_plan_single_disc_success() {
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: None,
         target_media_paths: Vec::new(),
     };
@@ -191,12 +201,16 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
                 source_descriptor: cue1.clone(),
                 target_chd_path: chd1.clone(),
                 status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
             },
             PlannedDisc {
                 disc_number: 2,
                 source_descriptor: cue2.clone(),
                 target_chd_path: chd2.clone(),
                 status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
             },
         ],
         target_m3u_path: Some(m3u.clone()),
@@ -204,6 +218,8 @@ async fn test_execute_plan_multidisc_creates_m3u_and_discs() {
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: None,
         target_media_paths: Vec::new(),
     };
@@ -255,12 +271,16 @@ async fn test_execute_plan_skipped_when_disabled() {
             source_descriptor: cue,
             target_chd_path: dir.path().join("out.chd"),
             status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
         }],
         target_m3u_path: None,
         confidence: 0.5,
         source: ClassificationSource::Fallback,
         enabled: false,
         needs_review: true,
+        status_note: None,
+        role: String::new(),
         artwork_url: None,
         target_media_paths: Vec::new(),
     };
@@ -308,12 +328,16 @@ async fn test_execute_plan_failure_handling() {
             source_descriptor: cue,
             target_chd_path: dir.path().join("out.chd"),
             status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
         }],
         target_m3u_path: None,
         confidence: 0.9,
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: None,
         target_media_paths: Vec::new(),
     };
@@ -360,10 +384,34 @@ fn test_trash_source_files() {
         "non_existent_file_9999.bin".to_string(), // non-existent
     ];
 
-    let count = trash_source_files(files_to_trash).unwrap();
-    assert_eq!(count, 2);
+    let outcome = trash_source_files(files_to_trash, dir.path().to_string_lossy().to_string()).unwrap();
+    assert_eq!(outcome.count, 2);
+    assert_eq!(outcome.bytes, 6);
     assert!(!file1.exists());
     assert!(!file2.exists());
+}
+
+#[test]
+fn test_trash_source_files_leaves_paths_outside_the_input_folder() {
+    let inside = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let kept = inside.path().join("keep.bin");
+    let secret = outside.path().join("secret.bin");
+    File::create(&kept).unwrap().write_all(b"keep").unwrap();
+    File::create(&secret).unwrap().write_all(b"secret").unwrap();
+
+    let outcome = trash_source_files(
+        vec![
+            kept.to_string_lossy().to_string(),
+            secret.to_string_lossy().to_string(),
+        ],
+        inside.path().to_string_lossy().to_string(),
+    )
+    .unwrap();
+
+    assert_eq!(outcome.count, 1);
+    assert!(!kept.exists());
+    assert!(secret.exists());
 }
 
 #[tokio::test]
@@ -426,6 +474,9 @@ async fn test_scan_and_plan_with_custom_media_options() {
         FrontendPreset::EsDe,
         None,
         Some(media_opts),
+        None,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -527,12 +578,16 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
             source_descriptor: cue1,
             target_chd_path: target_chd1.clone(),
             status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
         }],
         target_m3u_path: None,
         confidence: 0.95,
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: Some(format!("http://127.0.0.1:{}/good_art.png", port)),
         target_media_paths: vec![media_path1.clone()],
     };
@@ -548,12 +603,16 @@ async fn test_execute_plan_with_artwork_download_and_failure_resilience() {
             source_descriptor: cue2,
             target_chd_path: target_chd2.clone(),
             status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
         }],
         target_m3u_path: None,
         confidence: 0.95,
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: Some(format!("http://127.0.0.1:{}/bad_art.png", port)),
         target_media_paths: vec![media_path2.clone()],
     };

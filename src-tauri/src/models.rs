@@ -19,6 +19,9 @@ pub struct DiscFingerprint {
     pub detected_platform: Platform,
     pub calculated_sha1: Option<String>,
     pub total_bytes: u64,
+    /// Set when this descriptor could not be paired safely. The rest of the folder still plans.
+    #[serde(default)]
+    pub scan_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -67,6 +70,12 @@ pub struct PlannedDisc {
     pub source_descriptor: PathBuf,
     pub target_chd_path: PathBuf,
     pub status: TaskStatus,
+    /// Tracks resolved at scan time. Empty means execute may re-read the cue.
+    #[serde(default)]
+    pub binary_tracks: Vec<PathBuf>,
+    /// `createcd` or `createdvd`. Empty means derive it from the descriptor extension.
+    #[serde(default)]
+    pub chdman_command: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -107,6 +116,12 @@ pub struct PlannedGame {
     pub source: ClassificationSource,
     pub enabled: bool,
     pub needs_review: bool,
+    /// Jev or scan advisory the dry-run must show. Empty when classification succeeded.
+    #[serde(default)]
+    pub status_note: Option<String>,
+    /// `keeper` or `alternate`. Empty means keeper.
+    #[serde(default)]
+    pub role: String,
     pub artwork_url: Option<String>,
     pub target_media_paths: Vec<PathBuf>,
 }
@@ -137,6 +152,12 @@ pub struct GameStatusEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrashOutcome {
+    pub count: usize,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExecutionSummary {
     pub total_games: usize,
     pub successful_games: usize,
@@ -146,4 +167,8 @@ pub struct ExecutionSummary {
     pub source_files_to_trash: Vec<String>,
     pub total_source_bytes: u64,
     pub total_output_bytes: u64,
+    #[serde(default)]
+    pub failed_game_ids: Vec<String>,
+    #[serde(default)]
+    pub partial_game_ids: Vec<String>,
 }

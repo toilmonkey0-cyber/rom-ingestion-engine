@@ -22,6 +22,21 @@ pub enum ScannerError {
     ParseError(String),
 }
 
+/// SHA-1 of the whole track. This is the checksum a user DAT stores.
+pub fn calculate_full_sha1<P: AsRef<Path>>(track1_path: P) -> std::io::Result<String> {
+    let mut file = File::open(track1_path)?;
+    let mut hasher = Sha1::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buffer[..n]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
 /// Calculates the SHA-1 checksum on up to the first 16MB of track 1.
 pub fn calculate_track1_sha1<P: AsRef<Path>>(track1_path: P) -> std::io::Result<String> {
     let file = File::open(track1_path)?;
@@ -168,13 +183,27 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
         };
 
         let mut binary_tracks = Vec::new();
+        let mut scan_error = None;
         for filename in raw_refs {
             match cue_parser::resolve_path_case_insensitive(parent, &filename) {
                 Some(resolved) => {
-                    paired_tracks.insert(resolved.clone());
-                    binary_tracks.push(resolved);
+                    if crate::paths::existing_path_within(root, &resolved) {
+                        paired_tracks.insert(resolved.clone());
+                        binary_tracks.push(resolved);
+                    } else {
+                        scan_error.get_or_insert_with(|| {
+                            format!("Track escapes the input folder: {}", resolved.display())
+                        });
+                    }
                 }
-                None => return Err(ScannerError::MissingTrack(parent.join(filename))),
+                None => {
+                    scan_error.get_or_insert_with(|| {
+                        format!(
+                            "Referenced track not found: {}",
+                            parent.join(&filename).display()
+                        )
+                    });
+                }
             }
         }
 
@@ -186,7 +215,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
         }
 
         let calculated_sha1 = if let Some(track1) = binary_tracks.first() {
-            calculate_track1_sha1(track1).ok()
+            calculate_full_sha1(track1).ok()
         } else {
             None
         };
@@ -199,6 +228,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
             detected_platform,
             calculated_sha1,
             total_bytes,
+            scan_error,
         });
     }
 
@@ -212,7 +242,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
         }
 
         let total_bytes = std::fs::metadata(&iso_path).map(|m| m.len()).unwrap_or(0);
-        let calculated_sha1 = calculate_track1_sha1(&iso_path).ok();
+        let calculated_sha1 = calculate_full_sha1(&iso_path).ok();
         let detected_platform = detect_platform_from_path(&iso_path);
 
         fingerprints.push(DiscFingerprint {
@@ -221,6 +251,7 @@ pub fn scan_directory<P: AsRef<Path>>(root: P) -> Result<Vec<DiscFingerprint>, S
             detected_platform,
             calculated_sha1,
             total_bytes,
+            scan_error: None,
         });
     }
 

@@ -23,7 +23,9 @@ import { useIngestionStore } from '../store/useIngestionStore';
 export interface Step2DryRunTableProps {
   games?: PlannedGame[];
   onToggleGame?: (id: string) => void;
-  onUpdateTitle?: (id: string, title: string) => void;
+  onUpdateTitle?: (id: string, title: string) => void | Promise<void>;
+  onApplyRelease?: (id: string, title: string, region: string) => void;
+  onAcceptCueRewrite?: (cuePath: string) => void;
   onProceed?: () => void;
   onBack?: () => void;
 }
@@ -40,6 +42,8 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
   games: propGames,
   onToggleGame: propToggleGame,
   onUpdateTitle: propUpdateTitle,
+  onApplyRelease: propApplyRelease,
+  onAcceptCueRewrite: propAcceptCue,
   onProceed: propProceed,
   onBack: propBack,
 }) => {
@@ -48,12 +52,20 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
   const games = propGames ?? store.plan?.games ?? [];
   const toggleGame = propToggleGame ?? store.toggleGameEnabled;
   const updateTitle = propUpdateTitle ?? store.updateGameTitle;
+  const applyRelease = propApplyRelease ?? ((id: string, title: string, region: string) => {
+    void store.applyReleasePick(id, title, region);
+  });
+  const acceptCue = propAcceptCue ?? ((cuePath: string) => {
+    void store.acceptCueRewrite(cuePath);
+  });
   const handleProceed = propProceed ?? store.startExecution;
   const handleBack = propBack ?? (() => store.setStep(1));
 
   const [searchQuery, setSearchQuery] = useState('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingText, setEditingText] = useState('');
+  const [releaseTitle, setReleaseTitle] = useState<Record<string, string>>({});
+  const [releaseRegion, setReleaseRegion] = useState<Record<string, string>>({});
 
   const filteredGames = useMemo(() => {
     if (!searchQuery.trim()) return games;
@@ -207,6 +219,7 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
               <tr className="border-b border-slate-800 bg-slate-950/40 text-slate-400 font-semibold uppercase tracking-wider text-[11px]">
                 <th className="py-3 px-4 w-12 text-center">Inc</th>
                 <th className="py-3 px-4 w-28">Platform</th>
+                <th className="py-3 px-2 w-20 text-center">Art</th>
                 <th className="py-3 px-4 min-w-[240px]">Canonical Game Title</th>
                 <th className="py-3 px-4 w-24">Region</th>
                 <th className="py-3 px-4 w-28">Discs</th>
@@ -250,6 +263,18 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
                         <span className="font-mono font-semibold px-2 py-0.5 rounded text-[11px] bg-slate-800 text-slate-200 border border-slate-700 uppercase">
                           {game.platform}
                         </span>
+                      </td>
+
+                      <td className="py-3 px-2 text-center">
+                        {game.artwork_url ? (
+                          <img
+                            src={game.artwork_url}
+                            alt=""
+                            className="w-10 h-10 object-cover rounded border border-slate-700 mx-auto"
+                          />
+                        ) : (
+                          <span className="text-[10px] text-slate-500">No art</span>
+                        )}
                       </td>
 
                       {/* Title & Inline Editor */}
@@ -299,11 +324,72 @@ export const Step2DryRunTable: React.FC<Step2DryRunTableProps> = ({
                             </button>
                           </div>
                         )}
+                        {game.discs[0]?.target_chd_path && (
+                          <div className="text-[10px] text-slate-500 font-mono mt-0.5 truncate max-w-xs">
+                            {game.discs[0].target_chd_path}
+                          </div>
+                        )}
                         {game.target_m3u_path && (
                           <div className="text-[10px] text-indigo-400 font-mono mt-0.5">
                             Playlist: {game.target_m3u_path}
                           </div>
                         )}
+                        {game.role && (
+                          <div className="text-[10px] uppercase tracking-wide text-slate-400 mt-1">
+                            {game.role}
+                          </div>
+                        )}
+                        {game.status_note && (
+                          <div className="text-[10px] text-amber-300 mt-1">{game.status_note}</div>
+                        )}
+                        <form
+                          className="mt-2 flex flex-wrap items-center gap-1"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            const title = (releaseTitle[game.id] ?? '').trim();
+                            const region = (releaseRegion[game.id] ?? '').trim();
+                            if (title && region) applyRelease(game.id, title, region);
+                          }}
+                        >
+                          <input
+                            type="text"
+                            aria-label={`Release title for ${game.canonical_title}`}
+                            value={releaseTitle[game.id] ?? ''}
+                            onChange={(event) =>
+                              setReleaseTitle((current) => ({ ...current, [game.id]: event.target.value }))
+                            }
+                            placeholder="DAT title"
+                            className="w-28 px-1.5 py-1 bg-slate-950 border border-slate-700 rounded text-[10px] text-slate-200"
+                          />
+                          <input
+                            type="text"
+                            aria-label={`Release region for ${game.canonical_title}`}
+                            value={releaseRegion[game.id] ?? ''}
+                            onChange={(event) =>
+                              setReleaseRegion((current) => ({ ...current, [game.id]: event.target.value }))
+                            }
+                            placeholder="Region"
+                            className="w-16 px-1.5 py-1 bg-slate-950 border border-slate-700 rounded text-[10px] text-slate-200"
+                          />
+                          <button
+                            type="submit"
+                            className="px-2 py-1 rounded bg-slate-800 text-[10px] text-cyan-300 border border-slate-700"
+                          >
+                            Apply release
+                          </button>
+                        </form>
+                        {game.discs
+                          .filter((disc) => disc.source_descriptor.toLowerCase().endsWith('.cue'))
+                          .map((disc) => (
+                            <button
+                              key={disc.source_descriptor}
+                              type="button"
+                              onClick={() => acceptCue(disc.source_descriptor)}
+                              className="mt-1 block text-[10px] text-slate-400 underline"
+                            >
+                              Accept cue rewrite
+                            </button>
+                          ))}
                       </td>
 
                       {/* Region */}

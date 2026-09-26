@@ -23,6 +23,37 @@ pub fn platform_to_libretro_system(platform: Platform) -> Option<&'static str> {
 ///
 /// Characters invalid in Libretro file repositories (`&`, `*`, `/`, `:`, `\`, `<`, `>`, `?`, `|`)
 /// are replaced with `_`.
+fn percent_encode_segment(value: &str) -> String {
+    let mut out = String::new();
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'(' | b')' => {
+                out.push(byte as char);
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
+pub fn media_type_for_path(path: &Path) -> MediaType {
+    let text = path.to_string_lossy().to_ascii_lowercase();
+    if text.contains("named_snaps") || text.contains("screenshot") {
+        MediaType::Screenshots
+    } else if text.contains("named_titles") || text.contains("titlescreen") {
+        MediaType::TitleScreens
+    } else {
+        MediaType::BoxArt
+    }
+}
+
+pub fn looks_like_image(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"\x89PNG")
+        || bytes.starts_with(&[0xFF, 0xD8, 0xFF])
+        || bytes.starts_with(b"GIF8")
+        || (bytes.len() >= 12 && bytes.starts_with(b"RIFF") && &bytes[8..12] == b"WEBP")
+}
+
 pub fn sanitize_libretro_title(title: &str) -> String {
     title
         .chars()
@@ -112,7 +143,9 @@ pub fn generate_candidate_urls(
         if seen.insert(sanitized.clone()) {
             urls.push(format!(
                 "https://raw.githubusercontent.com/libretro-thumbnails/{}/master/{}/{}.png",
-                system_repo, media_folder, sanitized
+                percent_encode_segment(&system_repo),
+                percent_encode_segment(media_folder),
+                percent_encode_segment(&sanitized)
             ));
         }
     }
@@ -136,7 +169,7 @@ pub fn resolve_preset_media_path(
     media_type: MediaType,
 ) -> PathBuf {
     let platform_folder = get_platform_folder(preset, platform);
-    let clean_stem = stem.strip_suffix(".png").unwrap_or(stem);
+    let clean_stem = crate::paths::sanitize_file_stem(stem.strip_suffix(".png").unwrap_or(stem));
 
     let (rel_media_folder, filename) = match preset {
         FrontendPreset::AnbernicStock => ("Imgs", format!("{}.png", clean_stem)),
@@ -267,25 +300,41 @@ pub async fn download_media_file(
         })?;
     }
 
+    let saved = tokio::fs::read(&part_path)
+        .await
+        .map_err(|e| format!("Failed to read {}: {}", part_path.display(), e))?;
+    if !looks_like_image(&saved) {
+        return Err(format!(
+            "Download for {} is not an image",
+            dest_path.display()
+        ));
+    }
+
+    let backup = PathBuf::from(format!("{}.bak", dest_path.to_string_lossy()));
     if dest_path.exists() {
-        tokio::fs::remove_file(dest_path).await.map_err(|e| {
+        tokio::fs::rename(dest_path, &backup).await.map_err(|e| {
             format!(
-                "Failed to remove existing file {}: {}",
+                "Failed to move existing file aside {}: {}",
                 dest_path.display(),
                 e
             )
         })?;
     }
 
-    tokio::fs::rename(&part_path, dest_path).await.map_err(|e| {
-        format!(
+    if let Err(e) = tokio::fs::rename(&part_path, dest_path).await {
+        if backup.exists() {
+            let _ = tokio::fs::rename(&backup, dest_path).await;
+        }
+        return Err(format!(
             "Failed to rename {} to {}: {}",
             part_path.display(),
             dest_path.display(),
             e
-        )
-    })?;
-
+        ));
+    }
+    if backup.exists() {
+        let _ = tokio::fs::remove_file(&backup).await;
+    }
     guard.completed = true;
     Ok(())
 }

@@ -11,6 +11,7 @@ fn test_multi_disc_plan_grouping() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 700_000_000,
+        scan_error: None,
     };
     let disc2 = DiscFingerprint {
         primary_file: PathBuf::from("in/FF7_2.cue"),
@@ -18,6 +19,7 @@ fn test_multi_disc_plan_grouping() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 700_000_000,
+        scan_error: None,
     };
 
     let class1 = GameClassification {
@@ -68,6 +70,7 @@ fn test_single_disc_plan_has_no_m3u() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 650_000_000,
+        scan_error: None,
     };
     let class = GameClassification {
         canonical_title: "Tekken 3".to_string(),
@@ -104,6 +107,7 @@ fn test_discs_out_of_order_sorted_by_disc_number() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 600_000_000,
+        scan_error: None,
     };
     let disc1 = DiscFingerprint {
         primary_file: PathBuf::from("in/RE2_Disc1.cue"),
@@ -111,6 +115,7 @@ fn test_discs_out_of_order_sorted_by_disc_number() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 600_000_000,
+        scan_error: None,
     };
 
     let class2 = GameClassification {
@@ -156,6 +161,7 @@ fn test_low_confidence_sets_needs_review() {
         detected_platform: Platform::Psx,
         calculated_sha1: None,
         total_bytes: 500_000_000,
+        scan_error: None,
     };
     let class = GameClassification {
         canonical_title: "Unknown Game".to_string(),
@@ -187,6 +193,7 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
         detected_platform: Platform::SegaCd,
         calculated_sha1: None,
         total_bytes: 400_000_000,
+        scan_error: None,
     };
     let disc2 = DiscFingerprint {
         primary_file: PathBuf::from("in/Lunar2.cue"),
@@ -194,6 +201,7 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
         detected_platform: Platform::SegaCd,
         calculated_sha1: None,
         total_bytes: 400_000_000,
+        scan_error: None,
     };
 
     let class1 = GameClassification {
@@ -228,4 +236,125 @@ fn test_multiple_discs_infer_multidisc_even_if_flagged_false() {
     assert!(plan.games[0].is_multidisc);
     assert_eq!(plan.games[0].discs.len(), 2);
     assert!(plan.games[0].target_m3u_path.is_some());
+}
+
+#[test]
+fn test_same_title_different_regions_stay_separate_games() {
+    let usa = DiscFingerprint {
+        primary_file: PathBuf::from("in/FF7_USA.cue"),
+        binary_tracks: vec![PathBuf::from("in/FF7_USA.bin")],
+        detected_platform: Platform::Psx,
+        calculated_sha1: None,
+        total_bytes: 700_000_000,
+        scan_error: None,
+    };
+    let japan = DiscFingerprint {
+        primary_file: PathBuf::from("in/FF7_Japan.cue"),
+        binary_tracks: vec![PathBuf::from("in/FF7_Japan.bin")],
+        detected_platform: Platform::Psx,
+        calculated_sha1: None,
+        total_bytes: 700_000_000,
+        scan_error: None,
+    };
+    let usa_class = GameClassification {
+        canonical_title: "Final Fantasy VII".to_string(),
+        platform: Platform::Psx,
+        region: "USA".to_string(),
+        is_multidisc: false,
+        disc_number: Some(1),
+        total_discs: Some(1),
+        confidence: 0.99,
+        source: ClassificationSource::RedumpCache,
+    };
+    let mut japan_class = usa_class.clone();
+    japan_class.region = "Japan".to_string();
+
+    let plan = build_ingestion_plan(
+        PathBuf::from("in"),
+        PathBuf::from("out"),
+        FrontendPreset::EsDe,
+        vec![(usa, usa_class), (japan, japan_class)],
+    );
+
+    assert_eq!(plan.games.len(), 2);
+    assert!(plan.games.iter().all(|g| !g.is_multidisc));
+    assert!(plan.games.iter().all(|g| g.target_m3u_path.is_none()));
+    let mut regions: Vec<_> = plan.games.iter().map(|g| g.region.as_str()).collect();
+    regions.sort();
+    assert_eq!(regions, vec!["Japan", "USA"]);
+}
+
+#[test]
+fn test_duplicate_disc_numbers_are_not_renumbered_into_one_set() {
+    let copy_a = DiscFingerprint {
+        primary_file: PathBuf::from("in/a/Tekken3.cue"),
+        binary_tracks: vec![PathBuf::from("in/a/Tekken3.bin")],
+        detected_platform: Platform::Psx,
+        calculated_sha1: None,
+        total_bytes: 500_000_000,
+        scan_error: None,
+    };
+    let copy_b = DiscFingerprint {
+        primary_file: PathBuf::from("in/b/Tekken3.cue"),
+        binary_tracks: vec![PathBuf::from("in/b/Tekken3.bin")],
+        detected_platform: Platform::Psx,
+        calculated_sha1: None,
+        total_bytes: 500_000_000,
+        scan_error: None,
+    };
+    let class = GameClassification {
+        canonical_title: "Tekken 3".to_string(),
+        platform: Platform::Psx,
+        region: "USA".to_string(),
+        is_multidisc: false,
+        disc_number: Some(1),
+        total_discs: Some(1),
+        confidence: 0.99,
+        source: ClassificationSource::RedumpCache,
+    };
+
+    let plan = build_ingestion_plan(
+        PathBuf::from("in"),
+        PathBuf::from("out"),
+        FrontendPreset::AnbernicStock,
+        vec![(copy_a, class.clone()), (copy_b, class)],
+    );
+
+    assert_eq!(plan.games.len(), 2);
+    assert!(plan.games.iter().all(|g| g.needs_review));
+    assert!(plan.games.iter().all(|g| !g.is_multidisc));
+    assert!(plan.games.iter().all(|g| g.target_m3u_path.is_none()));
+    assert!(plan.games.iter().all(|g| g.discs.len() == 1 && g.discs[0].disc_number == 1));
+}
+
+#[test]
+fn test_gdi_plan_names_createdvd() {
+    let disc = DiscFingerprint {
+        primary_file: PathBuf::from("in/Sonic.gdi"),
+        binary_tracks: vec![PathBuf::from("in/Sonic.raw")],
+        detected_platform: Platform::Dreamcast,
+        calculated_sha1: None,
+        total_bytes: 1_000_000,
+        scan_error: None,
+    };
+    let class = GameClassification {
+        canonical_title: "Sonic Adventure".to_string(),
+        platform: Platform::Dreamcast,
+        region: "USA".to_string(),
+        is_multidisc: false,
+        disc_number: Some(1),
+        total_discs: Some(1),
+        confidence: 0.99,
+        source: ClassificationSource::Fallback,
+    };
+
+    let plan = build_ingestion_plan(
+        PathBuf::from("in"),
+        PathBuf::from("out"),
+        FrontendPreset::EsDe,
+        vec![(disc, class)],
+    );
+
+    assert_eq!(plan.games.len(), 1);
+    assert_eq!(plan.games[0].discs[0].chdman_command, "createdvd");
 }

@@ -172,6 +172,7 @@ fn test_redump_entry_direct_methods() {
         is_multidisc: false,
         disc_number: None,
         total_discs: None,
+        serial: None,
     };
 
     db.insert_entry("aaaabbbbccccddddeeeeffff0000111122223333", entry.clone());

@@ -6,6 +6,9 @@ import {
   GameStatusEvent,
   ChdmanStatus,
   DownloadProgressEvent,
+  MediaOptions,
+  PlannedGame,
+  TrashOutcome,
 } from '../types/plan';
 
 export const isTauri = (): boolean => {
@@ -19,7 +22,10 @@ export async function scanAndPlanApi(
   inputDir: string,
   outputDir: string,
   preset: FrontendPreset,
-  apiKey?: string
+  apiKey?: string,
+  mediaOptions?: MediaOptions,
+  datPath?: string,
+  regionPriority?: string[]
 ): Promise<IngestionPlan> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
@@ -28,6 +34,10 @@ export async function scanAndPlanApi(
       outputDir,
       preset,
       apiKey: apiKey?.trim() ? apiKey.trim() : null,
+      mediaOptions: mediaOptions ?? null,
+      datPath: datPath?.trim() ? datPath.trim() : null,
+      regionPriority: regionPriority && regionPriority.length > 0 ? regionPriority : null,
+      jevBaseUrl: null,
     });
   }
 
@@ -47,15 +57,17 @@ export async function scanAndPlanApi(
         region: 'USA',
         is_multidisc: true,
         discs: [
-          { disc_number: 1, source_descriptor: 'FF7_Disc1.cue', target_chd_path: '.multidisc/Final Fantasy VII (Disc 1).chd', status: 'pending' },
-          { disc_number: 2, source_descriptor: 'FF7_Disc2.cue', target_chd_path: '.multidisc/Final Fantasy VII (Disc 2).chd', status: 'pending' },
-          { disc_number: 3, source_descriptor: 'FF7_Disc3.cue', target_chd_path: '.multidisc/Final Fantasy VII (Disc 3).chd', status: 'pending' },
+          { disc_number: 1, source_descriptor: 'FF7_Disc1.cue', target_chd_path: '.discs/Final Fantasy VII (Disc 1).chd', status: 'pending' },
+          { disc_number: 2, source_descriptor: 'FF7_Disc2.cue', target_chd_path: '.discs/Final Fantasy VII (Disc 2).chd', status: 'pending' },
+          { disc_number: 3, source_descriptor: 'FF7_Disc3.cue', target_chd_path: '.discs/Final Fantasy VII (Disc 3).chd', status: 'pending' },
         ],
         target_m3u_path: 'Final Fantasy VII.m3u',
         confidence: 0.98,
         source: 'redumpcache',
         enabled: true,
         needs_review: false,
+        artwork_url: 'https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final Fantasy VII (USA).png',
+        target_media_paths: ['ROMS/PS/Imgs/Final Fantasy VII (USA).png'],
       },
       {
         id: 'game-mock-2',
@@ -71,6 +83,8 @@ export async function scanAndPlanApi(
         source: 'redumpcache',
         enabled: true,
         needs_review: false,
+        artwork_url: 'https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania - Symphony of the Night (USA).png',
+        target_media_paths: ['ROMS/PS/Imgs/Castlevania - Symphony of the Night (USA).png'],
       },
       {
         id: 'game-mock-3',
@@ -79,10 +93,10 @@ export async function scanAndPlanApi(
         region: 'USA',
         is_multidisc: true,
         discs: [
-          { disc_number: 1, source_descriptor: 'PDS_Disc1.cue', target_chd_path: '.multidisc/Panzer Dragoon Saga (Disc 1).chd', status: 'pending' },
-          { disc_number: 2, source_descriptor: 'PDS_Disc2.cue', target_chd_path: '.multidisc/Panzer Dragoon Saga (Disc 2).chd', status: 'pending' },
-          { disc_number: 3, source_descriptor: 'PDS_Disc3.cue', target_chd_path: '.multidisc/Panzer Dragoon Saga (Disc 3).chd', status: 'pending' },
-          { disc_number: 4, source_descriptor: 'PDS_Disc4.cue', target_chd_path: '.multidisc/Panzer Dragoon Saga (Disc 4).chd', status: 'pending' },
+          { disc_number: 1, source_descriptor: 'PDS_Disc1.cue', target_chd_path: '.discs/Panzer Dragoon Saga (Disc 1).chd', status: 'pending' },
+          { disc_number: 2, source_descriptor: 'PDS_Disc2.cue', target_chd_path: '.discs/Panzer Dragoon Saga (Disc 2).chd', status: 'pending' },
+          { disc_number: 3, source_descriptor: 'PDS_Disc3.cue', target_chd_path: '.discs/Panzer Dragoon Saga (Disc 3).chd', status: 'pending' },
+          { disc_number: 4, source_descriptor: 'PDS_Disc4.cue', target_chd_path: '.discs/Panzer Dragoon Saga (Disc 4).chd', status: 'pending' },
         ],
         target_m3u_path: 'Panzer Dragoon Saga.m3u',
         confidence: 0.92,
@@ -177,14 +191,112 @@ export async function executePlanApi(
   };
 }
 
-export async function trashSourceFilesApi(sourceFiles: string[]): Promise<number> {
+export async function trashSourceFilesApi(sourceFiles: string[], inputDir: string): Promise<TrashOutcome> {
   if (isTauri()) {
     const { invoke } = await import('@tauri-apps/api/core');
-    return await invoke<number>('trash_source_files', { sourceFiles });
+    return await invoke<TrashOutcome>('trash_source_files', { sourceFiles, inputDir });
   }
 
   await new Promise((r) => setTimeout(r, 400));
-  return sourceFiles.length;
+  return { count: sourceFiles.length, bytes: sourceFiles.length };
+}
+
+export async function applyDatReleaseApi(
+  game: PlannedGame,
+  title: string,
+  region: string,
+  outputDir: string,
+  preset: FrontendPreset
+): Promise<PlannedGame> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<PlannedGame>('apply_dat_release', {
+      game,
+      title,
+      region,
+      platform: game.platform,
+      discNumber: game.discs[0]?.disc_number ?? 1,
+      outputDir,
+      preset,
+    });
+  }
+  return {
+    ...game,
+    canonical_title: title,
+    region,
+    needs_review: false,
+    enabled: true,
+    status_note: null,
+    role: 'keeper',
+    discs: game.discs.map((disc) => ({
+      ...disc,
+      target_chd_path: `${outputDir}/${preset}/${title} (${region}).chd`,
+    })),
+  };
+}
+
+function previewStem(title: string, region: string): string {
+  const raw = region && !title.endsWith(`(${region})`) ? `${title} (${region})` : title;
+  return raw.replace(/[&*/:\\<>?|"]/g, '_');
+}
+
+export async function renamePlannedGameApi(
+  game: PlannedGame,
+  title: string,
+  outputDir: string,
+  preset: FrontendPreset,
+  mediaOptions?: MediaOptions
+): Promise<PlannedGame> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<PlannedGame>('rename_planned_game', {
+      game,
+      title,
+      outputDir,
+      preset,
+      mediaOptions: mediaOptions ?? null,
+    });
+  }
+  const stem = previewStem(title, game.region);
+  const multi = game.discs.length > 1;
+  const options = mediaOptions ?? {
+    download_boxart: true,
+    download_screenshots: false,
+    download_titles: false,
+  };
+  const media: string[] = [];
+  if (options.download_boxart) media.push(`${outputDir}/${preset}/media/${stem}.png`);
+  if (options.download_screenshots) media.push(`${outputDir}/${preset}/media/${stem}-screenshot.png`);
+  if (options.download_titles) media.push(`${outputDir}/${preset}/media/${stem}-titlescreen.png`);
+  return {
+    ...game,
+    canonical_title: title,
+    is_multidisc: multi,
+    target_m3u_path: multi ? `${outputDir}/${preset}/${stem}.m3u` : null,
+    target_media_paths: media,
+    discs: game.discs.map((disc) => ({
+      ...disc,
+      target_chd_path: multi
+        ? `${outputDir}/${preset}/.discs/${stem} (Disc ${disc.disc_number}).chd`
+        : `${outputDir}/${preset}/${stem}.chd`,
+    })),
+  };
+}
+
+export async function acceptCueRewriteApi(cuePath: string): Promise<string> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string>('accept_cue_rewrite', { cuePath });
+  }
+  return cuePath;
+}
+
+export async function deployLibraryApi(sourceDir: string, destDir: string): Promise<string[]> {
+  if (isTauri()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    return await invoke<string[]>('deploy_verified_library', { sourceDir, destDir });
+  }
+  return [];
 }
 
 let simulatedChdmanStatus: ChdmanStatus = {

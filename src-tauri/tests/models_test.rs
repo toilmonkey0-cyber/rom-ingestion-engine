@@ -8,6 +8,8 @@ fn test_models_json_roundtrip() {
         source_descriptor: PathBuf::from("C:/Roms/FF7_Disc1.cue"),
         target_chd_path: PathBuf::from("C:/Output/psx/.discs/Final Fantasy VII (USA) (Disc 1).chd"),
         status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
     };
 
     let game = PlannedGame {
@@ -22,6 +24,8 @@ fn test_models_json_roundtrip() {
         source: ClassificationSource::JevAI,
         enabled: true,
         needs_review: false,
+        status_note: None,
+        role: String::new(),
         artwork_url: Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII%20(USA).png".to_string()),
         target_media_paths: vec![PathBuf::from("C:/Output/ROMS/PS/Imgs/Final Fantasy VII (USA).png")],
     };
@@ -117,6 +121,7 @@ fn test_disc_fingerprint_and_game_classification_roundtrip() {
         detected_platform: Platform::Psx,
         calculated_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".to_string()),
         total_bytes: 650_000_000,
+        scan_error: None,
     };
 
     let serialized_fp = serde_json::to_string(&fingerprint).expect("serialize fingerprint");

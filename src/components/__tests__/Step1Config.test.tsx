@@ -16,7 +16,22 @@ describe('Step1Config', () => {
     expect(screen.getByText('OnionOS / GarlicOS')).toBeDefined();
     expect(screen.getByText('ES-DE (EmulationStation)')).toBeDefined();
     expect(screen.getByText('Batocera / Knulli')).toBeDefined();
+    expect(screen.getAllByText('Subfolder: .discs/')).toHaveLength(4);
+    expect(screen.queryByText(/\.multidisc\//)).toBeNull();
+    expect(screen.queryByText(/_multidisc\//)).toBeNull();
     expect(screen.getByPlaceholderText(/e\.g\. D:\/Emulation\/Dumps/i)).toBeDefined();
+  });
+
+  it('stores a DAT path and a region priority list', () => {
+    render(<Step1Config />);
+    fireEvent.change(screen.getByLabelText('Redump DAT'), {
+      target: { value: 'D:/dats/psx.dat' },
+    });
+    fireEvent.change(screen.getByLabelText('Region priority'), {
+      target: { value: 'USA, Japan' },
+    });
+    expect(useIngestionStore.getState().datPath).toBe('D:/dats/psx.dat');
+    expect(useIngestionStore.getState().regionPriority).toBe('USA, Japan');
   });
 
   it('updates input directory in store when typing', () => {

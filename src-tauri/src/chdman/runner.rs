@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::sync::{Arc, LazyLock};
 use regex::Regex;
 use tokio::io::{AsyncReadExt, BufReader};
 
@@ -24,6 +24,9 @@ pub enum ChdmanError {
 
     #[error("CHD header verification failed: file does not start with MComprHD magic bytes")]
     HeaderVerificationFailed,
+
+    #[error("{0}")]
+    UnsupportedInput(String),
 
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -83,6 +86,18 @@ impl ChdmanRunner {
         &self.binary_path
     }
 
+    pub async fn version_string(&self) -> String {
+        let Ok(output) = tokio::process::Command::new(&self.binary_path).output().await else {
+            return "unknown".to_string();
+        };
+        let text = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        crate::chdman::downloader::parse_version_string(&text).unwrap_or_else(|| "unknown".to_string())
+    }
+
     /// Converts a disc image descriptor (e.g. .cue, .gdi, .iso) to a compressed CHD file.
     ///
     /// Writes progress updates as a float percentage [0.0 - 100.0] to `on_progress`.
@@ -98,6 +113,14 @@ impl ChdmanRunner {
     where
         F: Fn(f32) + Send + Sync + 'static,
     {
+        let command = crate::paths::chdman_command_for_input(input_descriptor)
+            .map_err(ChdmanError::UnsupportedInput)?;
+
+        if output_chd.is_file() && matches!(verify_chd_header(output_chd), Ok(true)) {
+            on_progress(100.0);
+            return Ok(());
+        }
+
         // Ensure parent directory exists
         if let Some(parent) = output_chd.parent() {
             if !parent.as_os_str().is_empty() {
@@ -119,9 +142,11 @@ impl ChdmanRunner {
             completed: false,
         };
 
-        // Prepare command: createcd -i <input> -o <part_path> -f
+        let on_progress = Arc::new(on_progress);
+
+        // Prepare command: createcd or createdvd -i <input> -o <part_path> -f
         let mut cmd = tokio::process::Command::new(&self.binary_path);
-        cmd.arg("createcd")
+        cmd.arg(command)
             .arg("-i")
             .arg(input_descriptor)
             .arg("-o")
@@ -147,12 +172,33 @@ impl ChdmanRunner {
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
 
+        let progress_err = on_progress.clone();
         let stderr_task = tokio::spawn(async move {
             let mut err_str = String::new();
-            if let Some(mut err_reader) = stderr {
-                let mut buf = Vec::new();
-                let _ = err_reader.read_to_end(&mut buf).await;
-                err_str = String::from_utf8_lossy(&buf).to_string();
+            if let Some(err_reader) = stderr {
+                let mut reader = BufReader::new(err_reader);
+                let mut buf = [0u8; 1024];
+                let mut pending = String::new();
+                loop {
+                    let n = match reader.read(&mut buf).await {
+                        Ok(0) => break,
+                        Ok(n) => n,
+                        Err(_) => break,
+                    };
+                    let chunk = String::from_utf8_lossy(&buf[..n]);
+                    err_str.push_str(&chunk);
+                    pending.push_str(&chunk);
+                    while let Some(pos) = pending.find(['\r', '\n']) {
+                        let line = pending[..pos].to_string();
+                        if let Some(pct) = parse_chdman_progress_line(&line) {
+                            (*progress_err)(pct);
+                        }
+                        pending = pending[pos + 1..].to_string();
+                    }
+                }
+                if let Some(pct) = parse_chdman_progress_line(pending.trim()) {
+                    (*progress_err)(pct);
+                }
             }
             err_str
         });
@@ -173,7 +219,7 @@ impl ChdmanRunner {
                 while let Some(pos) = pending.find(['\r', '\n']) {
                     let line = &pending[..pos];
                     if let Some(pct) = parse_chdman_progress_line(line) {
-                        on_progress(pct);
+                        (*on_progress)(pct);
                     }
                     pending = pending[pos + 1..].to_string();
                 }
@@ -182,7 +228,7 @@ impl ChdmanRunner {
             let rem = pending.trim();
             if !rem.is_empty() {
                 if let Some(pct) = parse_chdman_progress_line(rem) {
-                    on_progress(pct);
+                    (*on_progress)(pct);
                 }
             }
         }
@@ -210,6 +256,26 @@ impl ChdmanRunner {
         guard.completed = true;
 
         Ok(())
+    }
+
+    pub async fn verify_output(&self, chd: &Path) -> Result<(), ChdmanError> {
+    if self.binary_path.as_os_str().is_empty() || !self.binary_path.exists() {
+        return Err(ChdmanError::BinaryNotFound);
+    }
+    let output = tokio::process::Command::new(&self.binary_path)
+        .arg("verify")
+        .arg("-i")
+        .arg(chd)
+        .output()
+        .await?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(ChdmanError::ProcessFailed {
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+        })
+    }
     }
 }
 

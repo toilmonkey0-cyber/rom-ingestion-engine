@@ -46,5 +46,6 @@ describe('Step3ExecutionProgress', () => {
     expect(screen.getByText('Gran Turismo 2')).toBeDefined();
     expect(screen.getAllByText(/50%/i).length).toBeGreaterThan(0);
     expect(screen.getByText(/Compressing Gran Turismo 2/i)).toBeDefined();
+    expect(screen.queryByRole('button', { name: /Pause/i })).toBeNull();
   });
 });

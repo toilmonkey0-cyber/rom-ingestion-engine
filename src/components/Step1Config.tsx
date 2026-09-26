@@ -9,6 +9,7 @@ import {
   Info,
   CheckCircle,
   AlertCircle,
+  Image,
 } from 'lucide-react';
 import { FrontendPreset } from '../types/plan';
 import { useIngestionStore } from '../store/useIngestionStore';
@@ -22,37 +23,34 @@ interface PresetOption {
   multidiscFolder: string;
 }
 
+/** Matches `get_multidisc_subfolder` in the Rust planner. Every preset writes this directory today. */
+const MULTIDISC_SUBFOLDER = '.discs/';
+
 const PRESET_OPTIONS: PresetOption[] = [
   {
     id: 'anbernicstock',
     title: 'Anbernic Stock OS',
     badge: 'Recommended',
-    description: 'Optimized for RG35XX / RG40XX series with clean M3U playlists and hidden .multidisc directory.',
-    multidiscFolder: '.multidisc/',
+    description: 'RG35XX / RG40XX folder names. Multi-disc CHD files are written into .discs, and the M3U sits beside that folder.',
+    multidiscFolder: MULTIDISC_SUBFOLDER,
   },
   {
     id: 'onionos',
     title: 'OnionOS / GarlicOS',
-    description: 'For Miyoo Mini and GarlicOS handhelds. Automatically structures multi-disc games into .multidisc.',
-    multidiscFolder: '.multidisc/',
+    description: 'Miyoo Mini and GarlicOS folder names. Multi-disc CHD files are written into .discs.',
+    multidiscFolder: MULTIDISC_SUBFOLDER,
   },
   {
     id: 'esde',
     title: 'ES-DE (EmulationStation)',
-    description: 'Clean desktop standard with _multidisc hidden subdirectories and ES-DE metadata scraping compatibility.',
-    multidiscFolder: '_multidisc/',
+    description: 'EmulationStation folder names. Multi-disc CHD files are written into .discs.',
+    multidiscFolder: MULTIDISC_SUBFOLDER,
   },
   {
     id: 'batocera',
     title: 'Batocera / Knulli',
-    description: 'Root folder playlists with discs organized for direct retroarch-mame / flycast core indexing.',
-    multidiscFolder: 'multidisc/',
-  },
-  {
-    id: 'custom',
-    title: 'Custom Standard',
-    description: 'Standard flat M3U layout with CHD tracks alongside or in custom subdirectories.',
-    multidiscFolder: '.multidisc/',
+    description: 'Batocera and Knulli folder names. Multi-disc CHD files are written into .discs.',
+    multidiscFolder: MULTIDISC_SUBFOLDER,
   },
 ];
 
@@ -60,6 +58,8 @@ export const Step1Config: React.FC = () => {
   const {
     inputDir,
     outputDir,
+    datPath,
+    regionPriority,
     preset,
     apiKey,
     isScanning,
@@ -70,10 +70,14 @@ export const Step1Config: React.FC = () => {
     chdmanDownloadedBytes,
     chdmanTotalBytes,
     chdmanError,
+    mediaOptions,
     setInputDir,
     setOutputDir,
+    setDatPath,
+    setRegionPriority,
     setPreset,
     setApiKey,
+    setMediaOptions,
     startScan,
     checkChdmanStatus,
     downloadChdman,
@@ -208,6 +212,43 @@ export const Step1Config: React.FC = () => {
             </p>
           </div>
         </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-slate-300" htmlFor="dat-path">
+              Redump DAT (optional)
+            </label>
+            <input
+              id="dat-path"
+              type="text"
+              value={datPath}
+              onChange={(e) => setDatPath(e.target.value)}
+              placeholder="e.g. D:/dats/psx.dat"
+              aria-label="Redump DAT"
+              className="w-full px-3.5 py-2.5 bg-slate-950/70 border border-slate-700/80 rounded-xl text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
+            />
+            <p className="text-[11px] text-slate-400">
+              A user DAT names releases by checksum or serial. Leave blank to keep filename fallback, which starts disabled.
+            </p>
+          </div>
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-slate-300" htmlFor="region-priority">
+              Region priority
+            </label>
+            <input
+              id="region-priority"
+              type="text"
+              value={regionPriority}
+              onChange={(e) => setRegionPriority(e.target.value)}
+              placeholder="USA, Europe, Japan"
+              aria-label="Region priority"
+              className="w-full px-3.5 py-2.5 bg-slate-950/70 border border-slate-700/80 rounded-xl text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-cyan-500/50 focus:border-cyan-500 transition-all font-mono"
+            />
+            <p className="text-[11px] text-slate-400">
+              Comma-separated. The first matching region stays enabled. Other regions of the same edition become alternates.
+            </p>
+          </div>
+        </div>
       </div>
 
       {/* Preset Selector */}
@@ -256,6 +297,66 @@ export const Step1Config: React.FC = () => {
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* Media & Artwork Options */}
+      <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 shadow-sm space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold text-white flex items-center space-x-2">
+            <Image className="w-4 h-4 text-purple-400" />
+            <span>Box Art & Media Downloads</span>
+          </h3>
+          <span className="text-xs text-slate-400">Libretro Open Thumbnails CDN</span>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="flex items-center space-x-3 p-3 rounded-xl bg-slate-950/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+            <input
+              type="checkbox"
+              checked={mediaOptions.download_boxart}
+              onChange={() => setMediaOptions({ download_boxart: !mediaOptions.download_boxart })}
+              className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-900 cursor-pointer"
+            />
+            <div>
+              <div className="text-xs font-semibold text-slate-200">Front Box Art</div>
+              <div className="text-[10px] text-slate-400">Cover art thumbnails</div>
+            </div>
+          </label>
+
+          <label className="flex items-center space-x-3 p-3 rounded-xl bg-slate-950/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+            <input
+              type="checkbox"
+              checked={mediaOptions.download_screenshots}
+              onChange={() => setMediaOptions({ download_screenshots: !mediaOptions.download_screenshots })}
+              className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-900 cursor-pointer"
+            />
+            <div>
+              <div className="text-xs font-semibold text-slate-200">Gameplay Screenshots</div>
+              <div className="text-[10px] text-slate-400">In-game screen captures</div>
+            </div>
+          </label>
+
+          <label className="flex items-center space-x-3 p-3 rounded-xl bg-slate-950/40 border border-slate-800 cursor-pointer hover:border-slate-700 transition-colors">
+            <input
+              type="checkbox"
+              checked={mediaOptions.download_titles}
+              onChange={() => setMediaOptions({ download_titles: !mediaOptions.download_titles })}
+              className="w-4 h-4 rounded bg-slate-900 border-slate-700 text-purple-500 focus:ring-purple-500 focus:ring-offset-slate-900 cursor-pointer"
+            />
+            <div>
+              <div className="text-xs font-semibold text-slate-200">Title Screens</div>
+              <div className="text-[10px] text-slate-400">Game title screen captures</div>
+            </div>
+          </label>
+        </div>
+
+        <div className="flex items-start space-x-2 text-xs text-slate-400">
+          <Info className="w-3.5 h-3.5 mt-0.5 text-slate-500 shrink-0" />
+          <span>
+            Downloads free community-maintained artwork from the Libretro Thumbnails CDN. Images are saved to preset-appropriate
+            media folders on your target device (e.g. <code className="text-purple-300 bg-slate-800/60 px-1 rounded">Imgs/</code> for Anbernic).
+          </span>
         </div>
       </div>
 

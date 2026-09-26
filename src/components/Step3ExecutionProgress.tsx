@@ -2,8 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import {
   Cpu,
   Terminal,
-  PauseCircle,
-  PlayCircle,
   AlertOctagon,
   CheckCircle,
   Copy,
@@ -14,11 +12,10 @@ import {
 import { useIngestionStore } from '../store/useIngestionStore';
 
 export const Step3ExecutionProgress: React.FC = () => {
-  const { plan, isExecuting, gameProgress, activeLogs, error, setStep } =
+  const { plan, isExecuting, gameProgress, discProgress, activeLogs, error, setStep } =
     useIngestionStore();
 
   const [copied, setCopied] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const terminalEndRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -67,30 +64,12 @@ export const Step3ExecutionProgress: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-400 mt-1">
-                Multi-threaded chdman compression with automated SHA-1 verification.
+                chdman compression. Each finished CHD is checked for the MComprHD header.
               </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-3">
-            <button
-              type="button"
-              onClick={() => setIsPaused(!isPaused)}
-              className="px-4 py-2 rounded-xl border border-slate-700 bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-xs font-semibold flex items-center space-x-2 transition-all"
-            >
-              {isPaused ? (
-                <>
-                  <PlayCircle className="w-4 h-4 text-emerald-400" />
-                  <span>Resume</span>
-                </>
-              ) : (
-                <>
-                  <PauseCircle className="w-4 h-4 text-amber-400" />
-                  <span>Pause</span>
-                </>
-              )}
-            </button>
-
             {!isExecuting && (
               <button
                 type="button"
@@ -174,7 +153,7 @@ export const Step3ExecutionProgress: React.FC = () => {
                       {game.canonical_title}
                     </span>
                     <span className="text-[11px] font-mono font-bold text-cyan-400">
-                      {isDone ? 'Verified' : `${Math.round(currentProg)}%`}
+                      {isDone ? 'Done' : `${Math.round(currentProg)}%`}
                     </span>
                   </div>
 
@@ -191,6 +170,18 @@ export const Step3ExecutionProgress: React.FC = () => {
                     />
                   </div>
 
+                  <div className="mt-2 space-y-1">
+                    {game.discs.map((disc) => {
+                      const discPct = discProgress[`${game.id}:${disc.disc_number}`]
+                        ?? (game.discs.length === 1 ? currentProg : 0);
+                      return (
+                        <div key={disc.disc_number} className="flex justify-between text-[10px] text-slate-400 font-mono">
+                          <span>Disc {disc.disc_number}</span>
+                          <span>{Math.round(discPct)}%</span>
+                        </div>
+                      );
+                    })}
+                  </div>
                   <div className="flex items-center justify-between text-[10px] text-slate-400 mt-2 font-mono">
                     <span className="uppercase">{game.platform}</span>
                     <span>{game.discs.length} disc{game.discs.length > 1 ? 's' : ''}</span>

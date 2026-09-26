@@ -135,8 +135,8 @@ fn test_generate_candidate_urls_standard() {
     assert_eq!(
         urls,
         vec![
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final Fantasy VII (USA).png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final Fantasy VII.png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII%20(USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII.png",
         ]
     );
 }
@@ -152,9 +152,9 @@ fn test_generate_candidate_urls_with_subtitle_and_sanitization() {
     assert_eq!(
         urls,
         vec![
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania_ Symphony of the Night (USA).png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania_ Symphony of the Night.png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania (USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania_%20Symphony%20of%20the%20Night%20(USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania_%20Symphony%20of%20the%20Night.png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania%20(USA).png",
             "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Castlevania.png",
         ]
     );
@@ -171,10 +171,10 @@ fn test_generate_candidate_urls_with_dash_subtitle() {
     assert_eq!(
         urls,
         vec![
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic Adventure - Limited Edition (USA).png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic Adventure - Limited Edition.png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic Adventure (USA).png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic Adventure.png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic%20Adventure%20-%20Limited%20Edition%20(USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic%20Adventure%20-%20Limited%20Edition.png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic%20Adventure%20(USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sega_-_Dreamcast/master/Named_Snaps/Sonic%20Adventure.png",
         ]
     );
 }
@@ -190,8 +190,8 @@ fn test_generate_candidate_urls_title_already_has_region() {
     assert_eq!(
         urls,
         vec![
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Metal Gear Solid (USA).png",
-            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Metal Gear Solid.png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Metal%20Gear%20Solid%20(USA).png",
+            "https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Metal%20Gear%20Solid.png",
         ]
     );
 }
@@ -220,17 +220,21 @@ fn test_planned_game_model_with_media() {
             source_descriptor: PathBuf::from("in/FF7_Disc1.cue"),
             target_chd_path: PathBuf::from("out/roms/psx/.discs/Final Fantasy VII (USA) (Disc 1).chd"),
             status: TaskStatus::Pending,
+            binary_tracks: Vec::new(),
+            chdman_command: String::new(),
         }],
         target_m3u_path: Some(PathBuf::from("out/roms/psx/Final Fantasy VII (USA).m3u")),
         confidence: 0.99,
         source: ClassificationSource::RedumpCache,
         enabled: true,
         needs_review: false,
-        artwork_url: Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final Fantasy VII (USA).png".to_string()),
+        status_note: None,
+        role: String::new(),
+        artwork_url: Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII%20(USA).png".to_string()),
         target_media_paths: vec![PathBuf::from("out/roms/psx/media/covers/Final Fantasy VII (USA).png")],
     };
 
-    assert_eq!(game.artwork_url.as_deref(), Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final Fantasy VII (USA).png"));
+    assert_eq!(game.artwork_url.as_deref(), Some("https://raw.githubusercontent.com/libretro-thumbnails/Sony_-_PlayStation/master/Named_Boxarts/Final%20Fantasy%20VII%20(USA).png"));
     assert_eq!(game.target_media_paths.len(), 1);
 }
 
@@ -366,6 +370,101 @@ async fn test_download_media_file_atomic_and_error_cleanup() {
     let broken_part = PathBuf::from(format!("{}.part", broken_path.to_string_lossy()));
     assert!(!broken_part.exists(), ".part file should be deleted on stream failure");
 
+    server.abort();
+}
+
+#[test]
+fn test_screenshot_and_title_candidates_are_not_boxart_urls() {
+    let boxart = generate_candidate_urls(
+        Platform::Psx,
+        "Final Fantasy VII",
+        "USA",
+        MediaType::BoxArt,
+    );
+    let snaps = generate_candidate_urls(
+        Platform::Psx,
+        "Final Fantasy VII",
+        "USA",
+        MediaType::Screenshots,
+    );
+    let titles = generate_candidate_urls(
+        Platform::Psx,
+        "Final Fantasy VII",
+        "USA",
+        MediaType::TitleScreens,
+    );
+    assert!(boxart[0].contains("/Named_Boxarts/"));
+    assert!(snaps[0].contains("/Named_Snaps/"));
+    assert!(titles[0].contains("/Named_Titles/"));
+    assert_ne!(boxart[0], snaps[0]);
+    assert_ne!(boxart[0], titles[0]);
+    assert!(boxart[0].contains("Final%20Fantasy%20VII%20(USA)"));
+
+    let shot = PathBuf::from("E:/games/roms/psx/media/screenshots/Final Fantasy VII (USA).png");
+    let title = PathBuf::from("E:/games/roms/psx/media/titlescreens/Final Fantasy VII (USA).png");
+    let cover = PathBuf::from("E:/games/roms/psx/media/covers/Final Fantasy VII (USA).png");
+    assert_eq!(media_type_for_path(&shot), MediaType::Screenshots);
+    assert_eq!(media_type_for_path(&title), MediaType::TitleScreens);
+    assert_eq!(media_type_for_path(&cover), MediaType::BoxArt);
+    assert!(generate_candidate_urls(
+        Platform::Psx,
+        "Final Fantasy VII",
+        "USA",
+        media_type_for_path(&shot),
+    )[0]
+        .contains("/Named_Snaps/"));
+    assert!(generate_candidate_urls(
+        Platform::Psx,
+        "Final Fantasy VII",
+        "USA",
+        media_type_for_path(&title),
+    )[0]
+        .contains("/Named_Titles/"));
+}
+
+#[tokio::test]
+async fn test_non_image_http_200_is_not_saved_as_art() {
+    use tempfile::tempdir;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        loop {
+            let (mut socket, _) = match listener.accept().await {
+                Ok(conn) => conn,
+                Err(_) => break,
+            };
+            let mut buf = [0u8; 2048];
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            let req = String::from_utf8_lossy(&buf[..n]);
+            if req.starts_with("GET /note.txt") {
+                let body = b"this is text, not an image";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(resp.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+            }
+            let _ = socket.flush().await;
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let dir = tempdir().unwrap();
+    let dest = dir.path().join("Named_Snaps").join("Game.png");
+    let result = download_media_file(
+        &client,
+        &format!("http://127.0.0.1:{port}/note.txt"),
+        &dest,
+    )
+    .await;
+    assert!(result.is_err(), "text body must not be accepted as art");
+    assert!(!dest.exists(), "non-image response was saved as art");
+    let part = PathBuf::from(format!("{}.part", dest.to_string_lossy()));
+    assert!(!part.exists());
     server.abort();
 }
 

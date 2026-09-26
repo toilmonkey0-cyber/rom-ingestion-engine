@@ -1,5 +1,5 @@
 // src-tauri/src/commands.rs
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use tauri::Emitter;
@@ -12,7 +12,8 @@ use crate::classifier::jev::JevClient;
 use crate::classifier::redump::RedumpDatabase;
 use crate::models::{
     ClassificationSource, DiscFingerprint, ExecutionSummary, FrontendPreset, GameClassification,
-    GameStatusEvent, IngestionPlan, JobProgressEvent, MediaOptions, Platform, TaskStatus,
+    GameStatusEvent, IngestionPlan, JobProgressEvent, MediaOptions, PlannedGame, Platform, TaskStatus,
+    TrashOutcome,
 };
 use crate::plan_builder::build_ingestion_plan_with_options;
 
@@ -142,6 +143,9 @@ pub async fn scan_and_plan(
     preset: FrontendPreset,
     api_key: Option<String>,
     media_options: Option<MediaOptions>,
+    dat_path: Option<String>,
+    region_priority: Option<Vec<String>>,
+    jev_base_url: Option<String>,
 ) -> Result<IngestionPlan, String> {
     let in_path = PathBuf::from(&input_dir);
     let out_path = PathBuf::from(&output_dir);
@@ -156,24 +160,37 @@ pub async fn scan_and_plan(
     let fingerprints =
         crate::scanner::scan_directory(&in_path).map_err(|e| format!("Scan error: {}", e))?;
 
-    let redump_db = RedumpDatabase::with_builtin_data();
+    let mut redump_db = RedumpDatabase::new();
+    if let Some(path) = dat_path.as_ref().filter(|p| !p.trim().is_empty()) {
+        let file = std::fs::File::open(path).map_err(|e| format!("Failed to open DAT {}: {}", path, e))?;
+        redump_db
+            .load_csv_or_tsv(file)
+            .map_err(|e| format!("Failed to read DAT {}: {}", path, e))?;
+    }
     let jev_client = api_key
         .as_ref()
         .filter(|k| !k.trim().is_empty())
-        .map(|k| JevClient::new(k.trim().to_string()));
+        .map(|k| match jev_base_url.as_ref().filter(|u| !u.trim().is_empty()) {
+            Some(base) => JevClient::with_base_url(k.trim().to_string(), base.clone()),
+            None => JevClient::new(k.trim().to_string()),
+        });
 
     let mut classified_items = Vec::new();
+    let mut jev_errors: Vec<(PathBuf, String)> = Vec::new();
 
     for disc in fingerprints {
-        // 1. Try local Redump SHA-1 lookup
-        let redump_match = if let Some(ref sha1) = disc.calculated_sha1 {
-            redump_db.lookup_sha1(sha1)
+        let hash_match = disc
+            .calculated_sha1
+            .as_ref()
+            .and_then(|sha1| redump_db.lookup_sha1(sha1));
+        let serial_match = if hash_match.is_none() && !redump_db.is_empty() {
+            crate::classifier::serial::read_serial_from_tracks(&disc.binary_tracks)
+                .and_then(|serial| redump_db.lookup_serial(&serial))
         } else {
             None
         };
 
-        // 2. If no Redump match, try TypeSafe Jev if API key provided
-        let classification = if let Some(c) = redump_match {
+        let classification = if let Some(c) = hash_match.or(serial_match) {
             c
         } else if let Some(ref jev) = jev_client {
             let filename = disc
@@ -190,7 +207,10 @@ pub async fn scan_and_plan(
 
             match jev.evaluate_game_filename(filename, folder).await {
                 Ok(c) => c,
-                Err(_) => classify_fallback(&disc),
+                Err(err) => {
+                    jev_errors.push((disc.primary_file.clone(), err.to_string()));
+                    classify_fallback(&disc)
+                }
             }
         } else {
             classify_fallback(&disc)
@@ -200,23 +220,142 @@ pub async fn scan_and_plan(
     }
 
     let media_opts = media_options.unwrap_or_default();
-    let plan = build_ingestion_plan_with_options(
+    let mut plan = build_ingestion_plan_with_options(
         in_path,
-        out_path,
+        out_path.clone(),
         preset,
         classified_items,
         &media_opts,
     );
+    for game in &mut plan.games {
+        for disc in &game.discs {
+            if let Some((_, err)) = jev_errors
+                .iter()
+                .find(|(path, _)| path == &disc.source_descriptor)
+            {
+                game.status_note = Some(format!("Jev classification failed: {err}"));
+                game.source = ClassificationSource::Fallback;
+            }
+        }
+    }
+    if let Some(priority) = region_priority {
+        crate::library::apply_region_priority(&mut plan.games, &priority);
+    }
+    let ledger = crate::library::load_ledger(&out_path);
+    if !ledger.is_empty() {
+        for game in &mut plan.games {
+            for disc in &mut game.discs {
+                let track_sha = disc
+                    .binary_tracks
+                    .first()
+                    .and_then(|track| crate::scanner::calculate_full_sha1(track).ok());
+                if let Some(sha) = track_sha {
+                    if let Some(hit) = crate::library::ledger_hit(&ledger, &sha) {
+                        if PathBuf::from(&hit.chd_path).is_file() {
+                            disc.status = TaskStatus::Skipped;
+                        }
+                    }
+                }
+            }
+            if game.discs.iter().all(|disc| disc.status == TaskStatus::Skipped) {
+                game.enabled = false;
+            }
+        }
+    }
     Ok(plan)
+}
+
+fn media_kind_name(kind: crate::models::MediaType) -> &'static str {
+    match kind {
+        crate::models::MediaType::BoxArt => "box art",
+        crate::models::MediaType::Screenshots => "screenshot",
+        crate::models::MediaType::TitleScreens => "title screen",
+    }
+}
+
+fn jailed_path_string(input_dir: &Path, path: &Path) -> Option<String> {
+    if crate::paths::existing_path_within(input_dir, path) {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+fn referenced_track_paths(descriptor: &Path, stored: &[PathBuf]) -> Vec<PathBuf> {
+    if !stored.is_empty() {
+        return stored.to_vec();
+    }
+    let ext = descriptor
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let Ok(content) = std::fs::read_to_string(descriptor) else {
+        return Vec::new();
+    };
+    let refs = match ext.as_deref() {
+        Some("gdi") => crate::scanner::parse_gdi_references(&content),
+        Some("cue") => crate::scanner::parse_cue_references(&content),
+        _ => return Vec::new(),
+    };
+    let parent = descriptor.parent().unwrap_or(Path::new(""));
+    refs.into_iter()
+        .map(|reference| parent.join(reference))
+        .filter(|path| path.exists())
+        .collect()
+}
+
+fn resolve_execution_paths(
+    output_dir: &Path,
+    preset: FrontendPreset,
+    platform: Platform,
+    title: &str,
+    region: &str,
+    is_multidisc: bool,
+    disc_number: u8,
+    disc_count: u8,
+    source: &Path,
+    stored_command: &str,
+) -> Result<crate::organizer::presets::TargetPaths, String> {
+    let command = crate::paths::chdman_command_for_input(source)?;
+    if !stored_command.is_empty() && stored_command != command {
+        return Err(format!(
+            "chdman command {stored_command} does not match {command} for {}",
+            source.display()
+        ));
+    }
+    let paths = crate::organizer::presets::resolve_target_paths(
+        output_dir,
+        preset,
+        platform,
+        title,
+        region,
+        is_multidisc,
+        Some(disc_number),
+        Some(disc_count),
+    );
+    if !crate::paths::is_lexically_within(output_dir, &paths.chd_path) {
+        return Err(format!(
+            "target escapes output folder: {}",
+            paths.chd_path.display()
+        ));
+    }
+    Ok(paths)
 }
 
 /// Internal result of executing a single disc conversion.
 struct DiscConversionResult {
+    game_id: String,
     disc_number: u8,
     success: bool,
     error: Option<String>,
     output_bytes: u64,
     source_files: Vec<String>,
+    source_sha1: String,
+    source_bytes: u64,
+    serial: Option<String>,
+    command: String,
+    /// Resolved CHD path. Read when a later step needs the file that was written.
+    #[allow(dead_code)]
     target_chd_path: PathBuf,
 }
 
@@ -256,9 +395,17 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
 
     let mut successful_games = 0;
     let mut failed_games = 0;
+    let mut failed_game_ids = Vec::new();
+    let mut partial_game_ids = Vec::new();
     let mut processed_discs = 0;
     let mut all_source_files_to_trash = Vec::new();
     let mut total_output_bytes = 0u64;
+    let input_dir = plan.input_dir.clone();
+    let output_dir = plan.output_dir.clone();
+    let preset = plan.preset;
+    let chdman_version = chdman.version_string().await;
+    let mut disc_join_set = tokio::task::JoinSet::new();
+    let mut shells: Vec<PlannedGame> = Vec::new();
 
     for game in plan.games {
         if !game.enabled {
@@ -276,7 +423,8 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
             error: None,
         });
 
-        let mut disc_join_set = tokio::task::JoinSet::new();
+        let game_shell = game.clone();
+        let disc_count = game.discs.len() as u8;
 
         for disc in game.discs {
             let sem = semaphore.clone();
@@ -285,18 +433,61 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
             let game_id = game.id.clone();
             let disc_number = disc.disc_number;
             let src = disc.source_descriptor.clone();
-            let target = disc.target_chd_path.clone();
+            let stored_tracks = disc.binary_tracks.clone();
+            let stored_command = disc.chdman_command.clone();
+            let title = game.canonical_title.clone();
+            let region = game.region.clone();
+            let platform = game.platform;
+            let is_multidisc = game.is_multidisc;
+            let out_dir = output_dir.clone();
+            let in_dir = input_dir.clone();
 
             disc_join_set.spawn(async move {
+                let paths = match resolve_execution_paths(
+                    &out_dir,
+                    preset,
+                    platform,
+                    &title,
+                    &region,
+                    is_multidisc,
+                    disc_number,
+                    disc_count.max(1),
+                    &src,
+                    &stored_command,
+                ) {
+                    Ok(paths) => paths,
+                    Err(error) => {
+                        return DiscConversionResult {
+                            game_id: game_id.clone(),
+                            disc_number,
+                            success: false,
+                            error: Some(error),
+                            output_bytes: 0,
+                            source_files: Vec::new(),
+                            source_sha1: String::new(),
+                            source_bytes: 0,
+                            serial: None,
+                            command: String::new(),
+                            target_chd_path: PathBuf::new(),
+                        };
+                    }
+                };
+                let target = paths.chd_path;
+
                 let _permit = match sem.acquire().await {
                     Ok(p) => p,
                     Err(e) => {
                         return DiscConversionResult {
+                            game_id: game_id.clone(),
                             disc_number,
                             success: false,
                             error: Some(e.to_string()),
                             output_bytes: 0,
                             source_files: Vec::new(),
+                            source_sha1: String::new(),
+                            source_bytes: 0,
+                            serial: None,
+                            command: String::new(),
                             target_chd_path: target,
                         };
                     }
@@ -313,7 +504,10 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                     });
                 };
 
-                let res = runner.convert(&src, &target, on_prog).await;
+                let res = match runner.convert(&src, &target, on_prog).await {
+                    Ok(()) => runner.verify_output(&target).await,
+                    Err(err) => Err(err),
+                };
                 drop(_permit);
 
                 match res {
@@ -326,159 +520,210 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
                         });
 
                         let out_bytes = std::fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
-                        let mut sources = vec![src.to_string_lossy().to_string()];
-
-                        // Discover referenced tracks if cue/gdi
-                        let ext = src
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .map(|e| e.to_ascii_lowercase());
-                        if let Some(ref ext_str) = ext {
-                            if ext_str == "cue" || ext_str == "gdi" {
-                                if let Ok(content) = std::fs::read_to_string(&src) {
-                                    let refs = if ext_str == "gdi" {
-                                        crate::scanner::parse_gdi_references(&content)
-                                    } else {
-                                        crate::scanner::parse_cue_references(&content)
-                                    };
-                                    let parent = src.parent().unwrap_or(Path::new(""));
-                                    for r in refs {
-                                        let track_path = parent.join(r);
-                                        if track_path.exists() {
-                                            sources.push(track_path.to_string_lossy().to_string());
-                                        }
-                                    }
-                                }
+                        let mut sources = Vec::new();
+                        if let Some(descriptor) = jailed_path_string(&in_dir, &src) {
+                            sources.push(descriptor);
+                        }
+                        for track in referenced_track_paths(&src, &stored_tracks) {
+                            if let Some(jailed) = jailed_path_string(&in_dir, &track) {
+                                sources.push(jailed);
                             }
                         }
 
                         DiscConversionResult {
+                            game_id: game_id.clone(),
                             disc_number,
                             success: true,
                             error: None,
                             output_bytes: out_bytes,
+                            source_sha1: stored_tracks
+                                .first()
+                                .and_then(|track| crate::scanner::calculate_full_sha1(track).ok())
+                                .unwrap_or_default(),
+                            source_bytes: stored_tracks
+                                .iter()
+                                .map(|track| {
+                                    std::fs::metadata(track).map(|meta| meta.len()).unwrap_or(0)
+                                })
+                                .sum(),
+                            serial: crate::classifier::serial::read_serial_from_tracks(&stored_tracks),
+                            command: crate::paths::chdman_command_for_input(&src)
+                                .unwrap_or(stored_command.as_str())
+                                .to_string(),
                             source_files: sources,
                             target_chd_path: target,
                         }
                     }
                     Err(err) => DiscConversionResult {
+                        game_id: game_id.clone(),
                         disc_number,
                         success: false,
                         error: Some(err.to_string()),
                         output_bytes: 0,
                         source_files: Vec::new(),
+                        source_sha1: String::new(),
+                        source_bytes: 0,
+                        serial: None,
+                        command: String::new(),
                         target_chd_path: target,
                     },
                 }
             });
         }
+        shells.push(game_shell);
+    }
 
-        let mut game_disc_results = Vec::new();
-        while let Some(res) = disc_join_set.join_next().await {
-            match res {
-                Ok(disc_res) => game_disc_results.push(disc_res),
-                Err(join_err) => {
-                    game_disc_results.push(DiscConversionResult {
-                        disc_number: 0,
-                        success: false,
-                        error: Some(join_err.to_string()),
-                        output_bytes: 0,
-                        source_files: Vec::new(),
-                        target_chd_path: PathBuf::new(),
-                    });
-                }
-            }
+    let mut grouped: HashMap<String, Vec<DiscConversionResult>> = HashMap::new();
+    while let Some(joined) = disc_join_set.join_next().await {
+        if let Ok(disc) = joined {
+            grouped.entry(disc.game_id.clone()).or_default().push(disc);
         }
-
-        // Sort disc results by disc_number
-        game_disc_results.sort_by_key(|r| r.disc_number);
-
-        let has_failure = game_disc_results.iter().any(|r| !r.success);
+    }
+    let mut media_jobs = Vec::new();
+    for game in shells {
+        let mut game_disc_results = grouped.remove(&game.id).unwrap_or_default();
+        game_disc_results.sort_by_key(|result| result.disc_number);
+        if game_disc_results.is_empty() {
+            continue;
+        }
+        let has_failure = game_disc_results.iter().any(|result| !result.success);
         if has_failure {
             failed_games += 1;
+            failed_game_ids.push(game.id.clone());
+            if game.is_multidisc {
+                partial_game_ids.push(game.id.clone());
+            }
             let first_error = game_disc_results
                 .iter()
-                .find(|r| !r.success)
-                .and_then(|r| r.error.clone())
+                .find(|result| !result.success)
+                .and_then(|result| result.error.clone())
                 .unwrap_or_else(|| "Unknown disc conversion error".to_string());
-
             emitter.emit_game_status(&GameStatusEvent {
                 game_id: game.id.clone(),
                 status: TaskStatus::Failed,
                 error: Some(first_error),
             });
-        } else {
-            // Write M3U if multi-disc
-            if game.is_multidisc {
-                if let Some(ref m3u_path) = game.target_m3u_path {
-                    let multidisc_subfolder =
-                        crate::organizer::presets::get_multidisc_subfolder(plan.preset);
-                    let mut relative_entries = Vec::new();
-                    for d in &game_disc_results {
-                        if let Some(name) = d.target_chd_path.file_name().and_then(|f| f.to_str()) {
-                            relative_entries.push(format!("{}/{}", multidisc_subfolder, name));
-                        }
+            continue;
+        }
+        if game.is_multidisc {
+            let mut relative_entries = Vec::new();
+            let mut m3u_path = None;
+            for disc in &game.discs {
+                if let Ok(paths) = resolve_execution_paths(
+                    &output_dir,
+                    preset,
+                    game.platform,
+                    &game.canonical_title,
+                    &game.region,
+                    true,
+                    disc.disc_number,
+                    game.discs.len() as u8,
+                    &disc.source_descriptor,
+                    &disc.chdman_command,
+                ) {
+                    if m3u_path.is_none() {
+                        m3u_path = paths.m3u_path;
                     }
-
-                    if let Err(e) =
-                        crate::organizer::m3u::write_m3u_file(m3u_path, &relative_entries)
-                    {
-                        failed_games += 1;
-                        emitter.emit_game_status(&GameStatusEvent {
-                            game_id: game.id.clone(),
-                            status: TaskStatus::Failed,
-                            error: Some(format!("Failed to write M3U playlist: {}", e)),
-                        });
-                        continue;
-                    }
-                }
-            }
-
-            successful_games += 1;
-            for d in game_disc_results {
-                processed_discs += 1;
-                total_output_bytes += d.output_bytes;
-                all_source_files_to_trash.extend(d.source_files);
-            }
-
-            // Download media if target_media_paths is populated or artwork_url is available
-            if !game.target_media_paths.is_empty() {
-                let resolved_url = match &game.artwork_url {
-                    Some(url) => Some(url.clone()),
-                    None => {
-                        crate::organizer::media::resolve_artwork_url(
-                            &http_client,
-                            game.platform,
-                            &game.canonical_title,
-                            &game.region,
-                        )
-                        .await
-                    }
-                };
-
-                if let Some(ref url) = resolved_url {
-                    for media_dest in &game.target_media_paths {
-                        if let Err(e) =
-                            crate::organizer::media::download_media_file(&http_client, url, media_dest)
-                                .await
-                        {
-                            eprintln!(
-                                "Warning: Failed to download artwork for '{}': {}",
-                                game.canonical_title, e
-                            );
-                        }
+                    if let Some(entry) = paths.relative_m3u_entry {
+                        relative_entries.push(entry);
                     }
                 }
             }
-
-            emitter.emit_game_status(&GameStatusEvent {
-                game_id: game.id.clone(),
-                status: TaskStatus::Verified,
-                error: None,
-            });
+            if let Some(m3u_path) = m3u_path {
+                if let Err(error) = crate::organizer::m3u::write_m3u_file(&m3u_path, &relative_entries) {
+                    failed_games += 1;
+                    failed_game_ids.push(game.id.clone());
+                    partial_game_ids.push(game.id.clone());
+                    emitter.emit_game_status(&GameStatusEvent {
+                        game_id: game.id.clone(),
+                        status: TaskStatus::Failed,
+                        error: Some(format!("Failed to write M3U playlist: {error}")),
+                    });
+                    continue;
+                }
+            }
+        }
+        successful_games += 1;
+        for result in &game_disc_results {
+            processed_discs += 1;
+            total_output_bytes += result.output_bytes;
+            all_source_files_to_trash.extend(result.source_files.clone());
+            if !result.source_sha1.is_empty() {
+                let _ = crate::library::append_ledger(
+                    &output_dir,
+                    &crate::library::LedgerRecord {
+                        source_path: result.source_files.first().cloned().unwrap_or_default(),
+                        source_bytes: result.source_bytes,
+                        source_sha1: result.source_sha1.clone(),
+                        serial: result.serial.clone(),
+                        chd_path: result.target_chd_path.to_string_lossy().to_string(),
+                        chdman_version: chdman_version.clone(),
+                        command: result.command.clone(),
+                        result: "ok".to_string(),
+                    },
+                );
+            }
+        }
+        media_jobs.push(game.clone());
+        emitter.emit_game_status(&GameStatusEvent {
+            game_id: game.id.clone(),
+            status: TaskStatus::Verified,
+            error: None,
+        });
+    }
+    for game in media_jobs {
+        if game.target_media_paths.is_empty() {
+            continue;
+        }
+        for media_dest in &game.target_media_paths {
+            let kind = crate::organizer::media::media_type_for_path(media_dest);
+            let candidates = crate::organizer::media::generate_candidate_urls(
+                game.platform,
+                &game.canonical_title,
+                &game.region,
+                kind,
+            );
+            let resolved_url = if kind == crate::models::MediaType::BoxArt {
+                if let Some(url) = game.artwork_url.clone() {
+                    Some(url)
+                } else {
+                    crate::organizer::media::resolve_artwork_url_from_candidates(&http_client, &candidates).await
+                }
+            } else {
+                crate::organizer::media::resolve_artwork_url_from_candidates(&http_client, &candidates).await
+            };
+            let Some(url) = resolved_url else {
+                eprintln!(
+                    "Warning: no {} image for '{}'",
+                    media_kind_name(kind),
+                    game.canonical_title
+                );
+                continue;
+            };
+            if let Err(error) =
+                crate::organizer::media::download_media_file(&http_client, &url, media_dest).await
+            {
+                eprintln!(
+                    "Warning: Failed to download artwork for '{}': {}",
+                    game.canonical_title, error
+                );
+            }
         }
     }
 
+    let mut shared_counts: HashMap<PathBuf, usize> = HashMap::new();
+    for path in &all_source_files_to_trash {
+        let key = PathBuf::from(path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(path));
+        *shared_counts.entry(key).or_default() += 1;
+    }
+    all_source_files_to_trash.retain(|path| {
+        let key = PathBuf::from(path)
+            .canonicalize()
+            .unwrap_or_else(|_| PathBuf::from(path));
+        shared_counts.get(&key).copied().unwrap_or(0) == 1
+    });
     all_source_files_to_trash.sort();
     all_source_files_to_trash.dedup();
 
@@ -491,6 +736,8 @@ pub async fn execute_plan_internal<E: EventSink + Clone + Send + Sync + 'static>
         source_files_to_trash: all_source_files_to_trash,
         total_source_bytes: plan.total_source_bytes,
         total_output_bytes,
+        failed_game_ids,
+        partial_game_ids,
     })
 }
 
@@ -508,19 +755,80 @@ pub async fn execute_plan(
 ///
 /// Returns the number of files successfully moved to the trash.
 #[tauri::command]
-pub fn trash_source_files(source_files: Vec<String>) -> Result<usize, String> {
+pub fn trash_source_files(source_files: Vec<String>, input_dir: String) -> Result<TrashOutcome, String> {
     let mut count = 0;
+    let mut bytes = 0u64;
     let mut unique_paths = HashSet::new();
+    let root = PathBuf::from(input_dir);
 
     for s in source_files {
         let p = PathBuf::from(&s);
-        if p.exists() && unique_paths.insert(p.clone()) {
+        if p.exists() && crate::paths::existing_path_within(&root, &p) && unique_paths.insert(p.clone())
+        {
+            let len = std::fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0);
             trash::delete(&p).map_err(|e| format!("Failed to move '{}' to trash: {}", s, e))?;
             count += 1;
+            bytes += len;
         }
     }
 
-    Ok(count)
+    Ok(TrashOutcome { count, bytes })
+}
+
+#[tauri::command]
+pub fn apply_dat_release(
+    mut game: PlannedGame,
+    title: String,
+    region: String,
+    platform: Platform,
+    disc_number: Option<u8>,
+    output_dir: String,
+    preset: FrontendPreset,
+) -> PlannedGame {
+    crate::library::apply_dat_choice(
+        &mut game,
+        &title,
+        &region,
+        platform,
+        disc_number,
+        Path::new(&output_dir),
+        preset,
+    );
+    game
+}
+
+#[tauri::command]
+pub fn rename_planned_game(
+    mut game: PlannedGame,
+    title: String,
+    output_dir: String,
+    preset: FrontendPreset,
+    media_options: Option<MediaOptions>,
+) -> PlannedGame {
+    crate::library::apply_title_edit(
+        &mut game,
+        &title,
+        Path::new(&output_dir),
+        preset,
+        &media_options.unwrap_or_default(),
+    );
+    game
+}
+
+#[tauri::command]
+pub fn accept_cue_rewrite(cue_path: String) -> Result<String, String> {
+    let path = PathBuf::from(&cue_path);
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let parent = path.parent().unwrap_or(Path::new("."));
+    let rewritten = crate::library::propose_relative_cue(&text, parent)
+        .ok_or_else(|| "Cue does not need a relative rewrite".to_string())?;
+    std::fs::write(&path, &rewritten).map_err(|e| e.to_string())?;
+    Ok(rewritten)
+}
+
+#[tauri::command]
+pub fn deploy_verified_library(source_dir: String, dest_dir: String) -> Result<Vec<String>, String> {
+    crate::library::deploy_library(Path::new(&source_dir), Path::new(&dest_dir), None)
 }
 
 /// Returns the current detection status and availability of chdman.

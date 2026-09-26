@@ -128,21 +128,56 @@ fn test_scan_directory_platform_detection_from_folder_hints() {
 }
 
 #[test]
-fn test_scan_directory_missing_track_returns_error() {
+fn test_scan_directory_missing_track_keeps_the_rest_of_the_folder() {
     let dir = tempdir().unwrap();
     let root = dir.path();
 
     let cue_path = root.join("Missing.cue");
     File::create(&cue_path).unwrap().write_all(b"FILE \"DoesNotExist.bin\" BINARY\n  TRACK 01 MODE2/2352\n").unwrap();
 
-    let result = scan_directory(root);
-    assert!(result.is_err());
-    match result.unwrap_err() {
-        ScannerError::MissingTrack(missing) => {
-            assert_eq!(missing, root.join("DoesNotExist.bin"));
-        }
-        err => panic!("Expected MissingTrack error, got {:?}", err),
-    }
+    let good_bin = root.join("Good.bin");
+    let good_cue = root.join("Good.cue");
+    File::create(&good_bin).unwrap().write_all(b"ok").unwrap();
+    File::create(&good_cue)
+        .unwrap()
+        .write_all(b"FILE \"Good.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
+        .unwrap();
+
+    let discs = scan_directory(root).expect("a missing track must not reject the folder");
+    assert_eq!(discs.len(), 2);
+    let missing = discs
+        .iter()
+        .find(|disc| disc.primary_file.ends_with("Missing.cue"))
+        .unwrap();
+    let error = missing.scan_error.as_deref().unwrap();
+    assert!(error.contains("DoesNotExist.bin"), "{error}");
+    let good = discs
+        .iter()
+        .find(|disc| disc.primary_file.ends_with("Good.cue"))
+        .unwrap();
+    assert!(good.scan_error.is_none());
+    assert_eq!(good.binary_tracks, vec![good_bin]);
+}
+
+#[test]
+fn test_scan_directory_rejects_track_outside_input_folder() {
+    let dir = tempdir().unwrap();
+    let root = dir.path().join("in");
+    std::fs::create_dir_all(&root).unwrap();
+    let outside = dir.path().join("secret.bin");
+    File::create(&outside).unwrap().write_all(b"secret").unwrap();
+    let cue = root.join("Escape.cue");
+    File::create(&cue)
+        .unwrap()
+        .write_all(b"FILE \"../secret.bin\" BINARY\n  TRACK 01 MODE1/2352\n")
+        .unwrap();
+
+    let discs = scan_directory(&root).expect("scan");
+    assert_eq!(discs.len(), 1);
+    assert!(discs[0].binary_tracks.is_empty());
+    let error = discs[0].scan_error.as_deref().unwrap();
+    assert!(error.contains("escapes"), "{error}");
+    assert!(outside.exists());
 }
 
 #[test]

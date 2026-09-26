@@ -162,13 +162,14 @@ pub fn resolve_target_paths(
     let trimmed_title = canonical_title.trim();
     let trimmed_region = region.trim();
 
-    let base_name = if trimmed_region.is_empty()
+    let raw_name = if trimmed_region.is_empty()
         || trimmed_title.ends_with(&format!("({})", trimmed_region))
     {
         trimmed_title.to_string()
     } else {
         format!("{} ({})", trimmed_title, trimmed_region)
     };
+    let base_name = crate::paths::sanitize_file_stem(&raw_name);
 
     let base_dir = join_forward_slashes(output_root, platform_folder);
 

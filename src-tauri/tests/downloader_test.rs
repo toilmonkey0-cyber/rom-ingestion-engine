@@ -12,19 +12,9 @@ fn test_platform_manifest_resolution() {
     assert!(!m.download_url.is_empty());
     assert_eq!(m.expected_sha256.len(), 64);
 
-    let linux_manifest = get_platform_manifest("linux", "x86_64");
-    assert!(linux_manifest.is_some());
-    let l = linux_manifest.unwrap();
-    assert_eq!(l.binary_name, "chdman");
-    assert_eq!(l.archive_format, ArchiveFormat::TarGz);
-
-    let mac_arm = get_platform_manifest("darwin", "arm64");
-    assert!(mac_arm.is_some());
-    assert_eq!(mac_arm.unwrap().binary_name, "chdman");
-
-    let mac_x64 = get_platform_manifest("macos", "x86_64");
-    assert!(mac_x64.is_some());
-    assert_eq!(mac_x64.unwrap().binary_name, "chdman");
+    assert!(get_platform_manifest("linux", "x86_64").is_none());
+    assert!(get_platform_manifest("darwin", "arm64").is_none());
+    assert!(get_platform_manifest("macos", "x86_64").is_none());
 
     let unsupported = get_platform_manifest("freebsd", "sparc64");
     assert!(unsupported.is_none());
