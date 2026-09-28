@@ -12,7 +12,7 @@
     <a href="https://react.dev/"><img src="https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=black" alt="React 19"></a>
     <img src="https://img.shields.io/badge/Format-Lossless%20CHD%20v5-00D26A?style=flat-square" alt="Lossless CHD v5">
     <img src="https://img.shields.io/badge/AI-Needle%203%20Local-8B5CF6?style=flat-square" alt="Needle 3 Local AI">
-    <img src="https://img.shields.io/badge/Tests-58%20Passed-brightgreen?style=flat-square" alt="Tests Passed">
+    <img src="https://img.shields.io/badge/Tests-130%20Passed-brightgreen?style=flat-square" alt="Tests Passed">
     <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-0078D6?style=flat-square" alt="Cross Platform">
     <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square" alt="License: MIT"></a>
     <img src="https://img.shields.io/badge/ROMs%20%26%20BIOS-Never%20Bundled-2F855A?style=flat-square" alt="ROMs Policy">
@@ -195,7 +195,7 @@ The engine provides tailor-made directory structures for all major retro handhel
 |---|---|---|---|---|---|---|
 | **Anbernic Stock OS** | RG35XX, RG35XX+, RG40XX, RG-Cube, RG353 | `ROMS/{PS, SATURN, DC, MDCD, PCE}` | `ROMS/<SYS>/<Game>.m3u` | `ROMS/<SYS>/.discs/` | `ROMS/<SYS>/Imgs/<Stem>.png` | Filesystem auto-scan |
 | **OnionOS / GarlicOS** | Miyoo Mini, Miyoo Mini Plus, RG35XX | `Roms/{PS, SEGASATURN, DREAMCAST, SEGACD, PCECD}` | `Roms/<SYS>/<Game>.m3u` | `Roms/<SYS>/.discs/` | `Roms/<SYS>/Imgs/<Stem>.png` | Filesystem auto-scan |
-| **ES-DE (EmulationStation)** | Steam Deck, Odin 2, Retroid Pocket, PC, Mac | `ROMs/{psx, saturn, dreamcast, segacd, pcenginecd}` | `ROMs/<sys>/<Game>.m3u` | `ROMs/<sys>/.discs/` | `roms/<sys>/media/covers/<Stem>.png` | `ES-DE/gamelists/<sys>/gamelist.xml` |
+| **ES-DE (EmulationStation)** | Steam Deck, Odin 2, Retroid Pocket, PC, Mac | `ROMs/{psx, saturn, dreamcast, segacd, pcenginecd}` | `ROMs/<sys>/<Game>.m3u` | `ROMs/<sys>/.discs/` | `ROMs/<sys>/media/covers/<Stem>.png` | `ES-DE/gamelists/<sys>/gamelist.xml` |
 | **Batocera / Knulli** | Anbernic RG35XX-H, Raspberry Pi, Orange Pi | `roms/{psx, saturn, dreamcast, segacd, pcenginecd}` | `roms/<sys>/<Game>.m3u` | `roms/<sys>/.discs/` | `roms/<sys>/images/<Stem>-thumb.png` | Local `gamelist.xml` |
 | **Custom Standard** | Any DIY setup, Batocera fork, or custom NAS | User-configurable per platform | Configurable root | User-configurable | `media/covers/` or configurable | Configurable |
 

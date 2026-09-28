@@ -16,4 +16,4 @@ Briefly explain the goal and scope of this pull request.
 
 ## Testing Checklist
 - [ ] `npm test` passes (all Vitest frontend tests green)
-- [ ] `cargo test` in `src-tauri` passes (all backend suites green)
+- [ ] `cargo test` (`cd src-tauri && cargo test` or `--manifest-path src-tauri/Cargo.toml`) passes (all backend suites green)
